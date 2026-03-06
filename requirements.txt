@@ -1,0 +1,15 @@
+streamlit
+geopandas
+pandas
+shapely
+folium
+streamlit-folium
+requests
+openpyxl
+pyproj
+fiona
+pydeck
+matplotlib
+plotly
+scikit-learn
+thefuzz
