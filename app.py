@@ -10,7 +10,7 @@ from shapely.geometry import shape, Point
 from shapely.ops import transform as shapely_transform
 from pyproj import Transformer
 
-st.set_page_config(layout="wide", page_title="Bakken Unitization Screener", page_icon="🛢️")
+st.set_page_config(layout="wide", page_title="Bakken WF Section Screener", page_icon="🛢️")
 
 TIP = "font-size:11px;padding:3px 6px;background:rgba(255,255,255,.92);border:1px solid #333;border-radius:3px;"
 NULL_STY = {"fillColor": "#fff", "fillOpacity": 0, "color": "#888", "weight": 0.25}
@@ -280,7 +280,7 @@ def add_wf(df, uplift):
 
 # ── Sidebar ───────────────────────────────────────────
 sb = st.sidebar
-sb.title("🛢️ Unitization Screener")
+sb.title("🛢️ WF Unit Screener")
 
 sb.subheader("💧 Waterflood Scenario")
 oil_price = sb.slider("Oil Price ($/bbl)", 30.0, 120.0, 70.0, 1.0)
@@ -363,7 +363,7 @@ ALL_SEC = SEC_NUM + [
 ]
 
 # ── KPIs ──────────────────────────────────────────────
-st.title("🛢️ Bakken Unitization Screening Tool")
+st.title("🛢️ Bakken WF Section Screening Tool")
 k1, k2, k3, k4 = st.columns(4)
 t_ooip = sec_wf["SectionOOIP"].sum() if "SectionOOIP" in sec_wf.columns else 0
 t_incr = (
@@ -542,7 +542,7 @@ map_data = st_folium(
 
 # ── Polygon selection ─────────────────────────────────
 st.markdown("---")
-st.header("📐 Polygon Selection — Unitization Analysis")
+st.header("📐 Polygon Selection — Section Analysis")
 st.caption(
     "Draw a polygon/rectangle to evaluate waterflood potential & well inventory."
 )
