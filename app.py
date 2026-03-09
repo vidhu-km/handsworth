@@ -212,6 +212,14 @@ folium.GeoJson(land_json, name="Bakken Land",
                style_function=lambda _: {"fillColor": "#fff9c4", "color": "#fff9c4",
                                           "weight": 0.5, "fillOpacity": 0.15}).add_to(m)
 
+# Units
+folium.GeoJson(bu_json, name="Bakken Units",
+               style_function=lambda _: {"color": "black", "weight": 2,
+                                          "fillOpacity": 0, "dashArray": "5 3"}).add_to(m)
+folium.GeoJson(hu_json, name="Handsworth Units",
+               style_function=lambda _: {"color": "#d32f2f", "weight": 2.5,
+                                          "fillOpacity": 0.05, "fillColor": "#ef9a9a"}).add_to(m)
+
 # Section grid
 gc = section_gradient
 if gc != "None" and gc in sec_disp.columns:
@@ -240,14 +248,6 @@ folium.GeoJson(
     highlight_function=lambda _: {"weight": 2, "color": "black", "fillOpacity": 0.55},
     tooltip=folium.GeoJsonTooltip(fields=stf, aliases=[f"{f}:" for f in stf],
                                    localize=True, sticky=True, style=TIP)).add_to(m)
-
-# Units
-folium.GeoJson(bu_json, name="Bakken Units",
-               style_function=lambda _: {"color": "black", "weight": 2,
-                                          "fillOpacity": 0, "dashArray": "5 3"}).add_to(m)
-folium.GeoJson(hu_json, name="Handsworth Units",
-               style_function=lambda _: {"color": "#d32f2f", "weight": 2.5,
-                                          "fillOpacity": 0.05, "fillColor": "#ef9a9a"}).add_to(m)
 
 # Wells bulk
 wcols = [c for c in wells_disp.columns if c not in ("geometry", "_rep")]
