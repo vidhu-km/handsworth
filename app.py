@@ -116,8 +116,8 @@ def load():
 
     # ── separate lines vs points ──────────────────────
     line_mask = all_geom.geometry.geom_type.isin(["LineString", "MultiLineString"])
-    legs = all_geom[line_mask].copy()
-    pt_wells = all_geom[~line_mask].copy()
+    legs = all_geom[line_mask].copy().reset_index(drop=True)
+    pt_wells = all_geom[~line_mask].copy().reset_index(drop=True)
 
     # ── group multilaterals by heel ───────────────────
     groups = _group_heels(legs)
@@ -143,22 +143,24 @@ def load():
     # ── group attribute table (from 00 UWI row) ──────
     grp_rows = []
     for gid, meta in group_meta.items():
-        row = {"_gid": gid, "GroupLabel": meta["label"], "UWI00": meta["uwi00"]}
+        row = {"_gid": gid, "Well": meta["label"], "UWI": meta["uwi00"]}
         match = wdf[wdf["UWI"] == meta["uwi00"]]
         if not match.empty:
             r = match.iloc[0]
             for c in wdf.columns:
-                if c != "UWI":
-                    row[c] = r[c]
+                if c == "UWI":
+                    continue
+                row[c] = r[c]
         grp_rows.append(row)
     grp_attr = pd.DataFrame(grp_rows)
     grp_attr = grp_attr.merge(grp_len.reset_index(), on="_gid", how="left")
+    grp_attr.rename(columns={"_total_length_m": "Hz Length (m)"}, inplace=True)
 
     # production per metre
     for col in ["Cuml", "EUR"]:
         if col in grp_attr.columns:
             grp_attr[f"_{col}_per_m"] = (
-                grp_attr[col] / grp_attr["_total_length_m"]
+                grp_attr[col] / grp_attr["Hz Length (m)"]
             ).replace([np.inf, -np.inf], np.nan)
 
     # ── spatial overlay: legs × section grid ──────────
@@ -211,47 +213,54 @@ def load():
         sec["SectionURF"] = np.nan
 
     # ── wells display GeoDataFrame ────────────────────
-    legs_disp = legs.copy()
-    merge_cols = ["_gid", "GroupLabel", "UWI00", "_total_length_m"]
-    for c in ["Section", "Cuml", "EUR",
-              "Well Type", "Status", "Objective", "Injector", "Operator",
-              "On Prod Date", "Last Prod Date", "On Inj Date", "Last Inj Date"]:
-        if c in grp_attr.columns:
-            merge_cols.append(c)
-    merge_cols = list(dict.fromkeys(merge_cols))  # dedupe
-    legs_disp = legs_disp.merge(
-        grp_attr[[c for c in merge_cols if c in grp_attr.columns]],
-        on="_gid", how="left",
-    )
-    legs_disp.rename(columns={
-        "GroupLabel": "Well",
-        "UWI00": "UWI",
-        "_total_length_m": "Hz Length (m)",
-    }, inplace=True)
-    legs_disp.drop(columns=["_gid", "_leg_length_m"], inplace=True, errors="ignore")
+    # Only keep _gid on legs for the merge, then bring in group attributes
+    legs_base = legs[["_gid", "geometry"]].copy()
 
-    # point wells
+    # Columns to pull from grp_attr (excluding _gid and internal rate cols)
+    attr_cols = [c for c in grp_attr.columns
+                 if not c.startswith("_") or c == "_gid"]
+    legs_disp = legs_base.merge(grp_attr[attr_cols], on="_gid", how="left")
+    legs_disp.drop(columns=["_gid"], inplace=True, errors="ignore")
+
+    # Point wells
     if not pt_wells.empty:
-        pt_disp = pt_wells.merge(wdf, on="UWI", how="left")
+        pt_disp = pt_wells[["UWI", "geometry"]].merge(wdf, on="UWI", how="left")
         pt_disp["Well"] = pt_disp["UWI"]
         pt_disp["Hz Length (m)"] = 0.0
-        for c in legs_disp.columns:
-            if c not in pt_disp.columns and c != "geometry":
-                pt_disp[c] = np.nan
-        common = [c for c in legs_disp.columns if c in pt_disp.columns]
-        legs_disp = gpd.GeoDataFrame(
-            pd.concat([legs_disp[common], pt_disp[common]], ignore_index=True),
-            geometry="geometry", crs=CRS_W,
-        )
 
-    legs_disp["_rep"] = legs_disp.geometry.apply(toe_point)
+    # Build final wells GeoDataFrame with consistent columns
+    # Define the canonical column order
+    display_cols = (
+        ["Well", "UWI", "Section", "Hz Length (m)", "Cuml", "EUR",
+         "Well Type", "Status", "Objective", "Injector", "Operator",
+         "On Prod Date", "Last Prod Date", "On Inj Date", "Last Inj Date"]
+    )
+
+    # Ensure all display columns exist in legs_disp
+    for c in display_cols:
+        if c not in legs_disp.columns:
+            legs_disp[c] = np.nan
+
+    frames = [legs_disp[display_cols + ["geometry"]]]
+
+    if not pt_wells.empty:
+        for c in display_cols:
+            if c not in pt_disp.columns:
+                pt_disp[c] = np.nan
+        frames.append(pt_disp[display_cols + ["geometry"]])
+
+    wells_final = gpd.GeoDataFrame(
+        pd.concat(frames, ignore_index=True),
+        geometry="geometry", crs=CRS_W,
+    )
+    wells_final["_rep"] = wells_final.geometry.apply(toe_point)
 
     # ── overlay JSON ──────────────────────────────────
     land_j = land.to_crs(CRS_M).to_json()
     bu_j = bu.to_crs(CRS_M).to_json()
     hu_j = hu.to_crs(CRS_M).to_json()
 
-    return legs_disp, sec, land_j, bu_j, hu_j
+    return wells_final, sec, land_j, bu_j, hu_j
 
 
 wells_gdf, sec_gdf, land_json, bu_json, hu_json = load()
@@ -359,18 +368,15 @@ k1, k2, k3, k4 = st.columns(4)
 t_ooip = sec_wf["SectionOOIP"].sum() if "SectionOOIP" in sec_wf.columns else 0
 t_incr = (
     sec_wf["WF Incremental Oil (bbl)"].sum()
-    if "WF Incremental Oil (bbl)" in sec_wf.columns
-    else 0
+    if "WF Incremental Oil (bbl)" in sec_wf.columns else 0
 )
 t_rev = (
     sec_wf["WF Incremental Revenue ($)"].sum()
-    if "WF Incremental Revenue ($)" in sec_wf.columns
-    else 0
+    if "WF Incremental Revenue ($)" in sec_wf.columns else 0
 )
 t_tot = (
     sec_wf["Total Recoverable (bbl)"].sum()
-    if "Total Recoverable (bbl)" in sec_wf.columns
-    else 0
+    if "Total Recoverable (bbl)" in sec_wf.columns else 0
 )
 k1.metric("OOIP (filtered)", f"{t_ooip:,.0f} bbl")
 k2.metric(f"WF Incremental @ {wf_uplift:.1f}% pts", f"{t_incr:,.0f} bbl")
@@ -465,7 +471,7 @@ folium.GeoJson(
 ).add_to(m)
 
 # ── Wells on map ──────────────────────────────────────
-_internal = {"geometry", "_rep"}
+ttip_exclude = {"geometry", "_rep"}
 lm = wells_disp.geometry.geom_type.isin(["LineString", "MultiLineString"])
 if lm.any():
     lw = wells_disp[lm].drop(columns=["_rep"], errors="ignore").copy()
@@ -473,6 +479,7 @@ if lm.any():
         if c != "geometry" and lw[c].dtype == object:
             lw[c] = lw[c].astype(str)
     lj = lw.to_json()
+    tip_fields = [c for c in lw.columns if c != "geometry"]
 
     folium.GeoJson(
         lj, name="Wells (hitbox)",
@@ -483,8 +490,8 @@ if lm.any():
             "weight": 14, "color": "#555", "opacity": 0.3,
         },
         tooltip=folium.GeoJsonTooltip(
-            fields=[c for c in lw.columns if c != "geometry"],
-            aliases=[f"{c}:" for c in lw.columns if c != "geometry"],
+            fields=tip_fields,
+            aliases=[f"{c}:" for c in tip_fields],
             localize=True, sticky=True, style=TIP,
         ),
     ).add_to(m)
@@ -507,12 +514,13 @@ if lm.any():
             ),
         ).add_to(m)
 
-pm = wells_disp.geometry.geom_type == "Point"
-if pm.any():
-    pw = wells_disp[pm].drop(columns=["_rep"], errors="ignore").copy()
+pm_mask = wells_disp.geometry.geom_type == "Point"
+if pm_mask.any():
+    pw = wells_disp[pm_mask].drop(columns=["_rep"], errors="ignore").copy()
     for c in pw.columns:
         if c != "geometry" and pw[c].dtype == object:
             pw[c] = pw[c].astype(str)
+    tip_fields_p = [c for c in pw.columns if c != "geometry"]
     folium.GeoJson(
         pw.to_json(), name="Well Points",
         marker=folium.CircleMarker(
@@ -520,8 +528,8 @@ if pm.any():
             fill_color="black", fill_opacity=0.9, weight=1,
         ),
         tooltip=folium.GeoJsonTooltip(
-            fields=[c for c in pw.columns if c != "geometry"],
-            aliases=[f"{c}:" for c in pw.columns if c != "geometry"],
+            fields=tip_fields_p,
+            aliases=[f"{c}:" for c in tip_fields_p],
             localize=True, sticky=True, style=TIP,
         ),
     ).add_to(m)
@@ -550,13 +558,13 @@ if drawings and len(drawings) > 0:
     sec_hits = gpd.sjoin(sec_wf, dgdf, how="inner", predicate="intersects")
     sec_hits = sec_hits.drop(columns=["index_right"], errors="ignore")
 
-    # Wells — intersects
+    # Wells — intersects (any leg touching polygon)
     well_hits = gpd.sjoin(
         wells_gdf[well_mask], dgdf, how="inner", predicate="intersects",
     )
     well_hits = well_hits.drop(columns=["index_right"], errors="ignore")
 
-    # Deduplicate by Well label for summary
+    # Deduplicate by Well label for summary (multilateral legs share label)
     well_unique = (
         well_hits.drop_duplicates(subset="Well")
         if "Well" in well_hits.columns
