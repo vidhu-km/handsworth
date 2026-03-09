@@ -19,11 +19,9 @@ CRS_M = "EPSG:4326"
 TO4 = Transformer.from_crs(CRS_W, CRS_M, always_xy=True)
 TO26 = Transformer.from_crs(CRS_M, CRS_W, always_xy=True)
 
-WELL_NUM = ["Hz Length (m)", "Cuml", "EUR", "1Y Cuml"]
+WELL_NUM = ["Hz Length (m)", "Cuml", "EUR"]
 WELL_CAT = ["Well Type", "Status", "Objective", "Injector", "Operator"]
-SEC_NUM = ["SectionOOIP", "SectionCuml", "SectionRF", "SectionEUR", "SectionURF"]
-
-HEEL_TOL = 1.0  # metres
+HEEL_TOL = 1.0
 
 
 def safe_range(s):
@@ -35,7 +33,6 @@ def safe_range(s):
 
 
 def heel_point(geom):
-    """Return the first coordinate of a LineString / MultiLineString as a Point."""
     if geom is None or geom.is_empty:
         return None
     if geom.geom_type == "LineString":
@@ -48,7 +45,6 @@ def heel_point(geom):
 
 
 def toe_point(geom):
-    """Return the last coordinate of a LineString / MultiLineString."""
     if geom is None or geom.is_empty:
         return None
     if geom.geom_type == "LineString":
@@ -61,15 +57,7 @@ def toe_point(geom):
 
 
 def _group_heels(legs):
-    """
-    Group leg geometries by heel proximity (HEEL_TOL metres).
-    Returns a list of lists of indices belonging to each group.
-    """
-    heels = []
-    for idx, row in legs.iterrows():
-        h = heel_point(row.geometry)
-        heels.append((idx, h))
-
+    heels = [(idx, heel_point(row.geometry)) for idx, row in legs.iterrows()]
     used = set()
     groups = []
     for i, (idx_i, hi) in enumerate(heels):
@@ -89,7 +77,6 @@ def _group_heels(legs):
 
 @st.cache_resource(show_spinner="Loading spatial data…")
 def load():
-    # ── read raw files ────────────────────────────────
     lines = gpd.read_file("lines.shp")
     points = gpd.read_file("points.shp")
     grid = gpd.read_file("ooipsectiongrid.shp")
@@ -114,51 +101,46 @@ def load():
     lines["UWI"] = lines["UWI"].astype(str).str.strip()
     points["UWI"] = points["UWI"].astype(str).str.strip()
 
-    for c in WELL_NUM:
+    for c in ["Cuml", "EUR"]:
         if c in wdf.columns:
             wdf[c] = pd.to_numeric(wdf[c], errors="coerce")
-    for c in ["SectionOOIP"]:
-        if c in sdf.columns:
-            sdf[c] = pd.to_numeric(sdf[c], errors="coerce")
+    if "SectionOOIP" in sdf.columns:
+        sdf["SectionOOIP"] = pd.to_numeric(sdf["SectionOOIP"], errors="coerce")
 
-    # ── build legs GeoDataFrame (lines only) ──────────
+    # ── assemble all well geometries ──────────────────
     pts_only = points[~points["UWI"].isin(lines["UWI"])][["UWI", "geometry"]]
     all_geom = gpd.GeoDataFrame(
         pd.concat([lines[["UWI", "geometry"]], pts_only], ignore_index=True),
         geometry="geometry", crs=CRS_W,
     )
 
-    # ── group multilaterals by heel proximity ─────────
+    # ── separate lines vs points ──────────────────────
     line_mask = all_geom.geometry.geom_type.isin(["LineString", "MultiLineString"])
     legs = all_geom[line_mask].copy()
     pt_wells = all_geom[~line_mask].copy()
 
+    # ── group multilaterals by heel ───────────────────
     groups = _group_heels(legs)
 
-    # Build a mapping: for each group find the "00" UWI; label = "00" UWI + " ML" if >1 leg
-    leg_to_group = {}  # original index → group_id
-    group_meta = {}    # group_id → {label, uwi00, is_ml, member_indices}
-
+    leg_to_gid = {}
+    group_meta = {}
     for gid, member_idxs in enumerate(groups):
-        uwis_in_group = legs.loc[member_idxs, "UWI"].tolist()
-        uwi00 = [u for u in uwis_in_group if u.endswith("00")]
-        uwi00 = uwi00[0] if uwi00 else uwis_in_group[0]
+        uwis = legs.loc[member_idxs, "UWI"].tolist()
+        uwi00 = next((u for u in uwis if u.endswith("00")), uwis[0])
         is_ml = len(member_idxs) > 1
         label = uwi00 + " ML" if is_ml else uwi00
-        group_meta[gid] = dict(label=label, uwi00=uwi00, is_ml=is_ml, member_idxs=member_idxs)
+        group_meta[gid] = dict(label=label, uwi00=uwi00, is_ml=is_ml,
+                                member_idxs=member_idxs)
         for mi in member_idxs:
-            leg_to_group[mi] = gid
+            leg_to_gid[mi] = gid
 
-    legs["_gid"] = legs.index.map(leg_to_group)
-
-    # ── compute lateral length from geometry ──────────
-    legs["_leg_length_m"] = legs.geometry.length  # CRS_W is metric
+    legs["_gid"] = legs.index.map(leg_to_gid)
+    legs["_leg_length_m"] = legs.geometry.length
 
     # total group length
     grp_len = legs.groupby("_gid")["_leg_length_m"].sum().rename("_total_length_m")
 
-    # ── merge Excel attributes from 00 UWI ───────────
-    # Build a small dataframe: one row per group with attributes from the 00 UWI
+    # ── group attribute table (from 00 UWI row) ──────
     grp_rows = []
     for gid, meta in group_meta.items():
         row = {"_gid": gid, "GroupLabel": meta["label"], "UWI00": meta["uwi00"]}
@@ -173,27 +155,25 @@ def load():
     grp_attr = grp_attr.merge(grp_len.reset_index(), on="_gid", how="left")
 
     # production per metre
-    for col in ["Cuml", "EUR", "1Y Cuml"]:
+    for col in ["Cuml", "EUR"]:
         if col in grp_attr.columns:
-            grp_attr[f"_{col}_per_m"] = grp_attr[col] / grp_attr["_total_length_m"]
-            grp_attr[f"_{col}_per_m"] = grp_attr[f"_{col}_per_m"].replace(
-                [np.inf, -np.inf], np.nan
-            )
+            grp_attr[f"_{col}_per_m"] = (
+                grp_attr[col] / grp_attr["_total_length_m"]
+            ).replace([np.inf, -np.inf], np.nan)
 
-    # ── spatial intersection: legs × section grid ─────
-    # We clip each leg by each section to get intersection length
-    legs_for_join = legs[["_gid", "geometry"]].copy()
-    sec_for_join = grid[["Section", "geometry"]].copy()
+    # ── spatial overlay: legs × section grid ──────────
+    legs_ov = legs[["_gid", "geometry"]].copy()
+    sec_ov = grid[["Section", "geometry"]].copy()
 
-    overlay = gpd.overlay(legs_for_join, sec_for_join, how="intersection")
+    overlay = gpd.overlay(legs_ov, sec_ov, how="intersection")
     overlay["_int_length_m"] = overlay.geometry.length
 
-    # merge per-metre rates
-    rate_cols = [c for c in grp_attr.columns if c.startswith("_") and c.endswith("_per_m")]
+    # merge rates
+    rate_cols = [c for c in grp_attr.columns if c.endswith("_per_m")]
     overlay = overlay.merge(grp_attr[["_gid"] + rate_cols], on="_gid", how="left")
 
-    # allocate production to each (group, section) pair
-    for col in ["Cuml", "EUR", "1Y Cuml"]:
+    # allocate
+    for col in ["Cuml", "EUR"]:
         pm = f"_{col}_per_m"
         if pm in overlay.columns:
             overlay[f"_alloc_{col}"] = overlay[pm] * overlay["_int_length_m"]
@@ -201,18 +181,21 @@ def load():
     # sum by section
     alloc_cols = [c for c in overlay.columns if c.startswith("_alloc_")]
     sec_alloc = overlay.groupby("Section")[alloc_cols].sum().reset_index()
-    rename_map = {f"_alloc_{c}": f"Section{c}" for c in ["Cuml", "EUR", "1Y Cuml"]}
-    sec_alloc.rename(columns=rename_map, inplace=True)
+    sec_alloc.rename(columns={
+        "_alloc_Cuml": "SectionCuml",
+        "_alloc_EUR": "SectionEUR",
+    }, inplace=True)
 
-    # ── merge OOIP + allocated production onto grid ───
+    # ── build section GeoDataFrame ────────────────────
     sec = grid.merge(sdf, on="Section", how="left")
     sec = sec.merge(sec_alloc, on="Section", how="left")
 
-    for c in ["SectionCuml", "SectionEUR", "Section1Y Cuml"]:
+    for c in ["SectionCuml", "SectionEUR"]:
         if c in sec.columns:
             sec[c] = sec[c].fillna(0)
 
     if "SectionOOIP" in sec.columns:
+        sec["SectionOOIP"] = sec["SectionOOIP"].fillna(0)
         sec["SectionRF"] = np.where(
             sec["SectionOOIP"] > 0,
             sec["SectionCuml"] / sec["SectionOOIP"],
@@ -220,7 +203,7 @@ def load():
         )
         sec["SectionURF"] = np.where(
             sec["SectionOOIP"] > 0,
-            sec.get("SectionEUR", 0) / sec["SectionOOIP"],
+            sec["SectionEUR"] / sec["SectionOOIP"],
             np.nan,
         )
     else:
@@ -228,53 +211,51 @@ def load():
         sec["SectionURF"] = np.nan
 
     # ── wells display GeoDataFrame ────────────────────
-    # Each leg keeps its own geometry but carries group-level attributes
     legs_disp = legs.copy()
-    disp_cols = ["_gid", "GroupLabel", "UWI00", "Section", "_total_length_m"] + \
-                [c for c in ["Cuml", "EUR", "1Y Cuml",
-                             "Well Type", "Status", "Objective", "Injector",
-                             "Operator", "On Prod Date", "Last Prod Date",
-                             "On Inj Date", "Last Inj Date", "Hz Length (m)"]
-                 if c in grp_attr.columns]
+    merge_cols = ["_gid", "GroupLabel", "UWI00", "_total_length_m"]
+    for c in ["Section", "Cuml", "EUR",
+              "Well Type", "Status", "Objective", "Injector", "Operator",
+              "On Prod Date", "Last Prod Date", "On Inj Date", "Last Inj Date"]:
+        if c in grp_attr.columns:
+            merge_cols.append(c)
+    merge_cols = list(dict.fromkeys(merge_cols))  # dedupe
     legs_disp = legs_disp.merge(
-        grp_attr[[c for c in disp_cols if c in grp_attr.columns]],
-        on="_gid", how="left"
+        grp_attr[[c for c in merge_cols if c in grp_attr.columns]],
+        on="_gid", how="left",
     )
-    # Rename for display
-    legs_disp.rename(columns={"GroupLabel": "Well", "_total_length_m": "Hz Length (m)",
-                               "UWI00": "UWI"}, inplace=True)
-    # drop internal cols
+    legs_disp.rename(columns={
+        "GroupLabel": "Well",
+        "UWI00": "UWI",
+        "_total_length_m": "Hz Length (m)",
+    }, inplace=True)
     legs_disp.drop(columns=["_gid", "_leg_length_m"], inplace=True, errors="ignore")
 
-    # Add point-only wells (vertical / no line)
+    # point wells
     if not pt_wells.empty:
         pt_disp = pt_wells.merge(wdf, on="UWI", how="left")
         pt_disp["Well"] = pt_disp["UWI"]
-        # keep only shared columns
-        shared = [c for c in legs_disp.columns if c in pt_disp.columns or c == "geometry"]
-        for c in shared:
+        pt_disp["Hz Length (m)"] = 0.0
+        for c in legs_disp.columns:
             if c not in pt_disp.columns and c != "geometry":
                 pt_disp[c] = np.nan
+        common = [c for c in legs_disp.columns if c in pt_disp.columns]
         legs_disp = gpd.GeoDataFrame(
-            pd.concat([legs_disp, pt_disp[[c for c in legs_disp.columns if c in pt_disp.columns]]],
-                      ignore_index=True),
-            geometry="geometry", crs=CRS_W
+            pd.concat([legs_disp[common], pt_disp[common]], ignore_index=True),
+            geometry="geometry", crs=CRS_W,
         )
 
-    # toe point for map endpoint dots
     legs_disp["_rep"] = legs_disp.geometry.apply(toe_point)
 
-    # ── pre-compute JSON for overlay layers ───────────
+    # ── overlay JSON ──────────────────────────────────
     land_j = land.to_crs(CRS_M).to_json()
     bu_j = bu.to_crs(CRS_M).to_json()
     hu_j = hu.to_crs(CRS_M).to_json()
 
-    return legs_disp, sec, land_j, bu_j, hu_j, grid
+    return legs_disp, sec, land_j, bu_j, hu_j
 
 
-wells_gdf, sec_gdf, land_json, bu_json, hu_json, raw_grid = load()
+wells_gdf, sec_gdf, land_json, bu_json, hu_json = load()
 
-# re-derive SEC_NUM based on what actually exists
 SEC_NUM = [c for c in ["SectionOOIP", "SectionCuml", "SectionRF",
                         "SectionEUR", "SectionURF"] if c in sec_gdf.columns]
 
@@ -294,7 +275,7 @@ sb.title("🛢️ Unitization Screener")
 
 sb.subheader("💧 Waterflood Scenario")
 oil_price = sb.slider("Oil Price ($/bbl)", 30.0, 120.0, 70.0, 1.0)
-wf_uplift = sb.slider("Waterflood RF Uplift (% points)", 0.0, 50.0, 5.0, 0.5,
+wf_uplift = sb.slider("Waterflood RF Uplift (% pts)", 0.0, 50.0, 5.0, 0.5,
                        help="Additive percentage-point increase in recovery factor")
 
 sb.markdown("---")
@@ -355,25 +336,44 @@ for c, vals in well_cat_filters.items():
     if c in wells_gdf.columns:
         well_mask &= wells_gdf[c].astype(str).isin(vals) | wells_gdf[c].isna()
 
-sb.caption(f"Sections: **{sec_mask.sum()}** / {len(sec_gdf)}  •  Wells: **{well_mask.sum()}** / {len(wells_gdf)}")
+sb.caption(
+    f"Sections: **{sec_mask.sum()}** / {len(sec_gdf)}  •  "
+    f"Wells: **{well_mask.sum()}** / {len(wells_gdf)}"
+)
 
 # ── Compute WF on filtered sections ──────────────────
 sec_wf = add_wf(sec_gdf[sec_mask], wf_uplift)
-sec_wf["WF Incremental Revenue ($)"] = sec_wf.get("WF Incremental Oil (bbl)", 0) * oil_price
+sec_wf["WF Incremental Revenue ($)"] = (
+    sec_wf.get("WF Incremental Oil (bbl)", 0) * oil_price
+)
 sec_disp = sec_wf.to_crs(CRS_M)
 wells_disp = wells_gdf[well_mask].to_crs(CRS_M)
 
-ALL_SEC = SEC_NUM + [c for c in WF_COLS + ["WF Incremental Revenue ($)"] if c in sec_wf.columns]
+ALL_SEC = SEC_NUM + [
+    c for c in WF_COLS + ["WF Incremental Revenue ($)"] if c in sec_wf.columns
+]
 
 # ── KPIs ──────────────────────────────────────────────
 st.title("🛢️ Bakken Unitization Screening Tool")
 k1, k2, k3, k4 = st.columns(4)
 t_ooip = sec_wf["SectionOOIP"].sum() if "SectionOOIP" in sec_wf.columns else 0
-t_incr = sec_wf["WF Incremental Oil (bbl)"].sum() if "WF Incremental Oil (bbl)" in sec_wf.columns else 0
-t_rev = sec_wf["WF Incremental Revenue ($)"].sum() if "WF Incremental Revenue ($)" in sec_wf.columns else 0
-t_tot = sec_wf["Total Recoverable (bbl)"].sum() if "Total Recoverable (bbl)" in sec_wf.columns else 0
+t_incr = (
+    sec_wf["WF Incremental Oil (bbl)"].sum()
+    if "WF Incremental Oil (bbl)" in sec_wf.columns
+    else 0
+)
+t_rev = (
+    sec_wf["WF Incremental Revenue ($)"].sum()
+    if "WF Incremental Revenue ($)" in sec_wf.columns
+    else 0
+)
+t_tot = (
+    sec_wf["Total Recoverable (bbl)"].sum()
+    if "Total Recoverable (bbl)" in sec_wf.columns
+    else 0
+)
 k1.metric("OOIP (filtered)", f"{t_ooip:,.0f} bbl")
-k2.metric(f"WF Incremental @ {wf_uplift:.1f}%", f"{t_incr:,.0f} bbl")
+k2.metric(f"WF Incremental @ {wf_uplift:.1f}% pts", f"{t_incr:,.0f} bbl")
 k3.metric("Total Recoverable w/ WF", f"{t_tot:,.0f} bbl")
 k4.metric(f"Incremental Rev @ ${oil_price:.0f}", f"${t_rev:,.0f}")
 
@@ -382,30 +382,48 @@ bnds = sec_gdf.total_bounds
 cx, cy = (bnds[0] + bnds[2]) / 2, (bnds[1] + bnds[3]) / 2
 clon, clat = TO4.transform(cx, cy)
 
-m = folium.Map(location=[clat, clon], zoom_start=11,
-               tiles="CartoDB positron", prefer_canvas=True)
+m = folium.Map(
+    location=[clat, clon], zoom_start=11,
+    tiles="CartoDB positron", prefer_canvas=True,
+)
 MiniMap(toggle_display=True, position="bottomleft").add_to(m)
-Draw(export=False, position="topleft",
-     draw_options=dict(polyline=False, circle=False, circlemarker=False, marker=False,
-                       rectangle=True,
-                       polygon=dict(allowIntersection=False,
-                                    shapeOptions=dict(color="#ff7800", weight=2,
-                                                      fillOpacity=0.1))),
-     edit_options=dict(edit=False)).add_to(m)
+Draw(
+    export=False, position="topleft",
+    draw_options=dict(
+        polyline=False, circle=False, circlemarker=False, marker=False,
+        rectangle=True,
+        polygon=dict(
+            allowIntersection=False,
+            shapeOptions=dict(color="#ff7800", weight=2, fillOpacity=0.1),
+        ),
+    ),
+    edit_options=dict(edit=False),
+).add_to(m)
 
 # Land
-folium.GeoJson(land_json, name="Bakken Land",
-               style_function=lambda _: {"fillColor": "#fff9c4", "color": "#fff9c4",
-                                          "weight": 0.5, "fillOpacity": 0.15}).add_to(m)
+folium.GeoJson(
+    land_json, name="Bakken Land",
+    style_function=lambda _: {
+        "fillColor": "#fff9c4", "color": "#fff9c4",
+        "weight": 0.5, "fillOpacity": 0.15,
+    },
+).add_to(m)
 
 # Units
-folium.GeoJson(bu_json, name="Bakken Units",
-               style_function=lambda _: {"color": "black", "weight": 2,
-                                          "fillOpacity": 0, "dashArray": "5 3"}).add_to(m)
-folium.GeoJson(hu_json, name="Handsworth Units",
-               style_function=lambda _: {"color": "#d32f2f", "weight": 2.5,
-                                          "fillOpacity": 0.05,
-                                          "fillColor": "#ef9a9a"}).add_to(m)
+folium.GeoJson(
+    bu_json, name="Bakken Units",
+    style_function=lambda _: {
+        "color": "black", "weight": 2,
+        "fillOpacity": 0, "dashArray": "5 3",
+    },
+).add_to(m)
+folium.GeoJson(
+    hu_json, name="Handsworth Units",
+    style_function=lambda _: {
+        "color": "#d32f2f", "weight": 2.5,
+        "fillOpacity": 0.05, "fillColor": "#ef9a9a",
+    },
+).add_to(m)
 
 # Section grid colouring
 gc = section_gradient
@@ -415,16 +433,19 @@ if gc != "None" and gc in sec_disp.columns:
         vn, vx = float(vals.min()), float(vals.max())
         if vn == vx:
             vx = vn + 1
-        cmap = cm.LinearColormap(["#f7fcf5", "#74c476", "#00441b"],
-                                  vmin=vn, vmax=vx).to_step(7)
+        cmap = cm.LinearColormap(
+            ["#f7fcf5", "#74c476", "#00441b"], vmin=vn, vmax=vx,
+        ).to_step(7)
         cmap.caption = gc
         m.add_child(cmap)
 
         def _s(f, _c=gc, _m=cmap):
             v = f["properties"].get(_c)
             if v is not None and not (isinstance(v, float) and np.isnan(v)):
-                return {"fillColor": _m(v), "fillOpacity": 0.5,
-                        "color": "white", "weight": 0.3}
+                return {
+                    "fillColor": _m(v), "fillOpacity": 0.5,
+                    "color": "white", "weight": 0.3,
+                }
             return NULL_STY
     else:
         _s = lambda _: NULL_STY
@@ -434,16 +455,17 @@ else:
 stf = [c for c in sec_disp.columns if c != "geometry"]
 folium.GeoJson(
     sec_disp.to_json(), name="Section Grid", style_function=_s,
-    highlight_function=lambda _: {"weight": 2, "color": "black", "fillOpacity": 0.55},
+    highlight_function=lambda _: {
+        "weight": 2, "color": "black", "fillOpacity": 0.55,
+    },
     tooltip=folium.GeoJsonTooltip(
         fields=stf, aliases=[f"{f}:" for f in stf],
-        localize=True, sticky=True, style=TIP)).add_to(m)
+        localize=True, sticky=True, style=TIP,
+    ),
+).add_to(m)
 
 # ── Wells on map ──────────────────────────────────────
-# tooltip columns (exclude internal cols)
 _internal = {"geometry", "_rep"}
-ttip_cols = [c for c in wells_disp.columns if c not in _internal]
-
 lm = wells_disp.geometry.geom_type.isin(["LineString", "MultiLineString"])
 if lm.any():
     lw = wells_disp[lm].drop(columns=["_rep"], errors="ignore").copy()
@@ -452,31 +474,38 @@ if lm.any():
             lw[c] = lw[c].astype(str)
     lj = lw.to_json()
 
-    # invisible fat hitbox for tooltips
     folium.GeoJson(
         lj, name="Wells (hitbox)",
-        style_function=lambda _: {"color": "transparent", "weight": 14, "opacity": 0},
-        highlight_function=lambda _: {"weight": 14, "color": "#555", "opacity": 0.3},
+        style_function=lambda _: {
+            "color": "transparent", "weight": 14, "opacity": 0,
+        },
+        highlight_function=lambda _: {
+            "weight": 14, "color": "#555", "opacity": 0.3,
+        },
         tooltip=folium.GeoJsonTooltip(
             fields=[c for c in lw.columns if c != "geometry"],
             aliases=[f"{c}:" for c in lw.columns if c != "geometry"],
-            localize=True, sticky=True, style=TIP)).add_to(m)
+            localize=True, sticky=True, style=TIP,
+        ),
+    ).add_to(m)
 
-    # thin visible line
     folium.GeoJson(
         lj, name="Well Lines",
-        style_function=lambda _: {"color": "black", "weight": 0.5,
-                                   "opacity": 0.8}).add_to(m)
+        style_function=lambda _: {
+            "color": "black", "weight": 0.5, "opacity": 0.8,
+        },
+    ).add_to(m)
 
-    # toe endpoints
     eps = wells_disp.loc[lm, "_rep"].dropna()
     if not eps.empty:
         folium.GeoJson(
             gpd.GeoDataFrame(geometry=list(eps), crs=CRS_M).to_json(),
             name="Well Endpoints",
-            marker=folium.CircleMarker(radius=1, color="black", fill=True,
-                                       fill_color="black", fill_opacity=0.8,
-                                       weight=1)).add_to(m)
+            marker=folium.CircleMarker(
+                radius=1, color="black", fill=True,
+                fill_color="black", fill_opacity=0.8, weight=1,
+            ),
+        ).add_to(m)
 
 pm = wells_disp.geometry.geom_type == "Point"
 if pm.any():
@@ -486,21 +515,29 @@ if pm.any():
             pw[c] = pw[c].astype(str)
     folium.GeoJson(
         pw.to_json(), name="Well Points",
-        marker=folium.CircleMarker(radius=2, color="black", fill=True,
-                                   fill_color="black", fill_opacity=0.9, weight=1),
+        marker=folium.CircleMarker(
+            radius=2, color="black", fill=True,
+            fill_color="black", fill_opacity=0.9, weight=1,
+        ),
         tooltip=folium.GeoJsonTooltip(
             fields=[c for c in pw.columns if c != "geometry"],
             aliases=[f"{c}:" for c in pw.columns if c != "geometry"],
-            localize=True, sticky=True, style=TIP)).add_to(m)
+            localize=True, sticky=True, style=TIP,
+        ),
+    ).add_to(m)
 
 folium.LayerControl(collapsed=True).add_to(m)
-map_data = st_folium(m, use_container_width=True, height=850,
-                     returned_objects=["all_drawings"])
+map_data = st_folium(
+    m, use_container_width=True, height=850,
+    returned_objects=["all_drawings"],
+)
 
 # ── Polygon selection ─────────────────────────────────
 st.markdown("---")
 st.header("📐 Polygon Selection — Unitization Analysis")
-st.caption("Draw a polygon/rectangle to evaluate waterflood potential & well inventory.")
+st.caption(
+    "Draw a polygon/rectangle to evaluate waterflood potential & well inventory."
+)
 
 drawings = map_data.get("all_drawings") if map_data else None
 
@@ -509,31 +546,42 @@ if drawings and len(drawings) > 0:
     d26 = shapely_transform(lambda x, y, z=None: TO26.transform(x, y), d4)
     dgdf = gpd.GeoDataFrame([{"geometry": d26}], crs=CRS_W)
 
-    # Sections — intersects so even partial overlap is captured
+    # Sections — intersects
     sec_hits = gpd.sjoin(sec_wf, dgdf, how="inner", predicate="intersects")
     sec_hits = sec_hits.drop(columns=["index_right"], errors="ignore")
 
-    # Wells — intersects so any leg touching the polygon is included
+    # Wells — intersects
     well_hits = gpd.sjoin(
-        wells_gdf[well_mask], dgdf, how="inner", predicate="intersects"
+        wells_gdf[well_mask], dgdf, how="inner", predicate="intersects",
     )
     well_hits = well_hits.drop(columns=["index_right"], errors="ignore")
 
-    # Deduplicate wells by "Well" label (multilateral legs share same label)
-    # For the summary table we want one row per well group
-    well_unique = well_hits.drop_duplicates(subset="Well") if "Well" in well_hits.columns else well_hits
+    # Deduplicate by Well label for summary
+    well_unique = (
+        well_hits.drop_duplicates(subset="Well")
+        if "Well" in well_hits.columns
+        else well_hits
+    )
 
     if sec_hits.empty and well_hits.empty:
         st.info("No data in polygon.")
     else:
-        # ── Section results ───────────────────────────
         if not sec_hits.empty:
             st.subheader(f"📊 {len(sec_hits)} Sections Selected")
             c1, c2, c3, c4 = st.columns(4)
-            so = sec_hits["SectionOOIP"].sum() if "SectionOOIP" in sec_hits.columns else 0
-            si = sec_hits["WF Incremental Oil (bbl)"].sum() if "WF Incremental Oil (bbl)" in sec_hits.columns else 0
+            so = (
+                sec_hits["SectionOOIP"].sum()
+                if "SectionOOIP" in sec_hits.columns else 0
+            )
+            si = (
+                sec_hits["WF Incremental Oil (bbl)"].sum()
+                if "WF Incremental Oil (bbl)" in sec_hits.columns else 0
+            )
             sr = si * oil_price
-            st_ = sec_hits["Total Recoverable (bbl)"].sum() if "Total Recoverable (bbl)" in sec_hits.columns else 0
+            st_ = (
+                sec_hits["Total Recoverable (bbl)"].sum()
+                if "Total Recoverable (bbl)" in sec_hits.columns else 0
+            )
             c1.metric("OOIP", f"{so:,.0f} bbl")
             c2.metric("WF Incremental Oil", f"{si:,.0f} bbl")
             c3.metric("Total Recoverable w/ WF", f"{st_:,.0f} bbl")
@@ -543,42 +591,61 @@ if drawings and len(drawings) > 0:
             sens = []
             for p in [1, 2, 3, 5, 7.5, 10, 15, 20, 25, 30]:
                 tmp = add_wf(sec_hits, p)
-                inc = tmp["WF Incremental Oil (bbl)"].sum() if "WF Incremental Oil (bbl)" in tmp.columns else 0
-                tot = tmp["Total Recoverable (bbl)"].sum() if "Total Recoverable (bbl)" in tmp.columns else 0
+                inc = (
+                    tmp["WF Incremental Oil (bbl)"].sum()
+                    if "WF Incremental Oil (bbl)" in tmp.columns else 0
+                )
+                tot = (
+                    tmp["Total Recoverable (bbl)"].sum()
+                    if "Total Recoverable (bbl)" in tmp.columns else 0
+                )
                 sens.append({
                     "Uplift (% pts)": p,
                     "Incremental Oil (bbl)": round(inc),
                     "Total Recoverable (bbl)": round(tot),
                     f"Revenue @ ${oil_price:.0f}/bbl": round(inc * oil_price),
                 })
-            st.dataframe(pd.DataFrame(sens), use_container_width=True, hide_index=True)
+            st.dataframe(
+                pd.DataFrame(sens), use_container_width=True, hide_index=True,
+            )
 
-            scols = ["Section"] + [c for c in ALL_SEC if c in sec_hits.columns]
+            scols = ["Section"] + [
+                c for c in ALL_SEC if c in sec_hits.columns
+            ]
             sdet = sec_hits[scols].reset_index(drop=True)
             with st.expander("Section Detail", expanded=False):
                 st.dataframe(sdet, use_container_width=True)
-            st.download_button("📥 Sections CSV", sdet.to_csv(index=False),
-                               "polygon_sections.csv", "text/csv")
+            st.download_button(
+                "📥 Sections CSV", sdet.to_csv(index=False),
+                "polygon_sections.csv", "text/csv",
+            )
 
-        # ── Well results ──────────────────────────────
         if not well_unique.empty:
             st.subheader(f"🛢️ {len(well_unique)} Wells Selected")
-            wc = (["Well", "UWI", "Section"] +
-                  [c for c in WELL_NUM if c in well_unique.columns] +
-                  [c for c in WELL_CAT if c in well_unique.columns])
+            wc = (
+                ["Well", "UWI", "Section"]
+                + [c for c in WELL_NUM if c in well_unique.columns]
+                + [c for c in WELL_CAT if c in well_unique.columns]
+            )
             wc = [c for c in wc if c in well_unique.columns]
             wdet = well_unique[wc].reset_index(drop=True)
 
             wk1, wk2, wk3 = st.columns(3)
-            wk1.metric("Total EUR",
-                       f"{well_unique['EUR'].sum():,.0f} bbl"
-                       if "EUR" in well_unique.columns else "—")
-            wk2.metric("Total Cuml",
-                       f"{well_unique['Cuml'].sum():,.0f} bbl"
-                       if "Cuml" in well_unique.columns else "—")
-            wk3.metric("Avg 1Y Cuml",
-                       f"{well_unique['1Y Cuml'].mean():,.0f} bbl"
-                       if "1Y Cuml" in well_unique.columns else "—")
+            wk1.metric(
+                "Total EUR",
+                f"{well_unique['EUR'].sum():,.0f} bbl"
+                if "EUR" in well_unique.columns else "—",
+            )
+            wk2.metric(
+                "Total Cuml",
+                f"{well_unique['Cuml'].sum():,.0f} bbl"
+                if "Cuml" in well_unique.columns else "—",
+            )
+            wk3.metric(
+                "Avg Hz Length",
+                f"{well_unique['Hz Length (m)'].mean():,.0f} m"
+                if "Hz Length (m)" in well_unique.columns else "—",
+            )
 
             with st.expander("Well Detail", expanded=False):
                 st.dataframe(wdet, use_container_width=True)
@@ -592,8 +659,12 @@ if drawings and len(drawings) > 0:
             })
             with st.expander("Well Aggregates", expanded=False):
                 st.dataframe(wagg, use_container_width=True)
-            st.download_button("📥 Wells CSV", wdet.to_csv(index=False),
-                               "polygon_wells.csv", "text/csv", key="dl_wells")
+            st.download_button(
+                "📥 Wells CSV", wdet.to_csv(index=False),
+                "polygon_wells.csv", "text/csv", key="dl_wells",
+            )
 else:
-    st.info("Draw a polygon or rectangle on the map to evaluate "
-            "waterflood unitization potential.")
+    st.info(
+        "Draw a polygon or rectangle on the map to evaluate "
+        "waterflood unitization potential."
+    )
