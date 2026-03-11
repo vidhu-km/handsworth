@@ -273,8 +273,8 @@ def add_wf(df, uplift):
     d = df.copy()
     if "SectionOOIP" in d.columns and "SectionRF" in d.columns:
         d["WF Incremental Oil (bbl)"] = d["SectionOOIP"] * (uplift / 100)
-        d["Total RF w/ WF"] = d["SectionRF"] + (uplift / 100)
-        d["Total Recoverable (bbl)"] = d["SectionOOIP"] * d["Total RF w/ WF"]
+        d["Total URF w/ WF"] = d["SectionURF"] + (uplift / 100)
+        d["Total Recoverable (bbl)"] = d["SectionOOIP"] * d["Total URF w/ WF"]
     return d
 
 
