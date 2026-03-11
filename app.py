@@ -420,7 +420,7 @@ folium.GeoJson(
     bu_json, name="Bakken Units",
     style_function=lambda _: {
         "color": "black", "weight": 3,
-        "fillOpacity": 0, "dashArray": "5 3",
+        "fillOpacity": 0,
     },
 ).add_to(m)
 folium.GeoJson(
