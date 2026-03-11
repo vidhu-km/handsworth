@@ -419,15 +419,15 @@ folium.GeoJson(
 folium.GeoJson(
     bu_json, name="Bakken Units",
     style_function=lambda _: {
-        "color": "black", "weight": 2,
+        "color": "black", "weight": 3,
         "fillOpacity": 0, "dashArray": "5 3",
     },
 ).add_to(m)
 folium.GeoJson(
     hu_json, name="Handsworth Units",
     style_function=lambda _: {
-        "color": "#d32f2f", "weight": 2.5,
-        "fillOpacity": 0.05, "fillColor": "#ef9a9a",
+        "color": "black", "weight": 3,
+        "fillOpacity": 0,
     },
 ).add_to(m)
 
