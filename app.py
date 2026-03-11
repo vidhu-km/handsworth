@@ -283,7 +283,7 @@ sb = st.sidebar
 sb.title("🛢️ WF Unit Screener")
 
 sb.subheader("💧 Waterflood Scenario")
-oil_price = sb.slider("Oil Price ($/bbl)", 30.0, 120.0, 70.0, 1.0)
+oil_price = sb.slider("Netback ($/bbl)", 30.0, 120.0, 70.0, 1.0)
 wf_uplift = sb.slider("Waterflood RF Uplift (% pts)", 0.0, 50.0, 5.0, 0.5,
                        help="Additive percentage-point increase in recovery factor")
 
@@ -352,14 +352,14 @@ sb.caption(
 
 # ── Compute WF on filtered sections ──────────────────
 sec_wf = add_wf(sec_gdf[sec_mask], wf_uplift)
-sec_wf["WF Incremental Revenue ($)"] = (
+sec_wf["WF Incremental Netback ($)"] = (
     sec_wf.get("WF Incremental Oil (bbl)", 0) * oil_price
 )
 sec_disp = sec_wf.to_crs(CRS_M)
 wells_disp = wells_gdf[well_mask].to_crs(CRS_M)
 
 ALL_SEC = SEC_NUM + [
-    c for c in WF_COLS + ["WF Incremental Revenue ($)"] if c in sec_wf.columns
+    c for c in WF_COLS + ["WF Incremental Netback ($)"] if c in sec_wf.columns
 ]
 
 # ── KPIs ──────────────────────────────────────────────
@@ -370,9 +370,9 @@ t_incr = (
     sec_wf["WF Incremental Oil (bbl)"].sum()
     if "WF Incremental Oil (bbl)" in sec_wf.columns else 0
 )
-t_rev = (
-    sec_wf["WF Incremental Revenue ($)"].sum()
-    if "WF Incremental Revenue ($)" in sec_wf.columns else 0
+t_nb = (
+    sec_wf["WF Incremental Netback ($)"].sum()
+    if "WF Incremental Netback ($)" in sec_wf.columns else 0
 )
 t_tot = (
     sec_wf["Total Recoverable (bbl)"].sum()
@@ -381,7 +381,7 @@ t_tot = (
 k1.metric("OOIP (filtered)", f"{t_ooip:,.0f} bbl")
 k2.metric(f"WF Incremental @ {wf_uplift:.1f}% pts", f"{t_incr:,.0f} bbl")
 k3.metric("Total Recoverable w/ WF", f"{t_tot:,.0f} bbl")
-k4.metric(f"Incremental Rev @ ${oil_price:.0f}", f"${t_rev:,.0f}")
+k4.metric(f"Incremental Netback @ ${oil_price:.0f}", f"${t_nb:,.0f}")
 
 # ── Map ───────────────────────────────────────────────
 bnds = sec_gdf.total_bounds
@@ -593,7 +593,7 @@ if drawings and len(drawings) > 0:
             c1.metric("OOIP", f"{so:,.0f} bbl")
             c2.metric("WF Incremental Oil", f"{si:,.0f} bbl")
             c3.metric("Total Recoverable w/ WF", f"{st_:,.0f} bbl")
-            c4.metric("Incremental Revenue", f"${sr:,.0f}")
+            c4.metric("Incremental Netback", f"${sr:,.0f}")
 
             st.subheader("Waterflood Uplift Sensitivity")
             sens = []
@@ -611,7 +611,7 @@ if drawings and len(drawings) > 0:
                     "Uplift (% pts)": p,
                     "Incremental Oil (bbl)": round(inc),
                     "Total Recoverable (bbl)": round(tot),
-                    f"Revenue @ ${oil_price:.0f}/bbl": round(inc * oil_price),
+                    f"Netback @ ${oil_price:.0f}/bbl": round(inc * oil_price),
                 })
             st.dataframe(
                 pd.DataFrame(sens), use_container_width=True, hide_index=True,
