@@ -77,7 +77,7 @@ def _group_heels(legs):
 
 @st.cache_resource(show_spinner="Loading spatial data…")
 def load():
-    lines = gpd.read_file("lines.shp")
+    lines = gpd.read_file("merged.shp")
     points = gpd.read_file("points.shp")
     grid = gpd.read_file("ooipsectiongrid.shp")
     bu = gpd.read_file("Bakken Units.shp")
