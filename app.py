@@ -1,5 +1,4 @@
-import streamlit as st
-import geopandas as gpd
+import streamlit as stimport geopandas as gpd
 import pandas as pd
 import numpy as np
 import folium
@@ -119,8 +118,7 @@ def load():
     legs = all_geom[line_mask].copy().reset_index(drop=True)
     pt_wells = all_geom[~line_mask].copy().reset_index(drop=True)
 
-    # ── group multilaterals by heel ───────────────────
-    groups = _group_heels(legs)
+    # ── group multilaterals by heel ───────────────────    groups = _group_heels(legs)
 
     leg_to_gid = {}
     group_meta = {}
@@ -239,15 +237,12 @@ def load():
     # Ensure all display columns exist in legs_disp
     for c in display_cols:
         if c not in legs_disp.columns:
-            legs_disp[c] = np.nan
-
-    frames = [legs_disp[display_cols + ["geometry"]]]
+            legs_disp[c] = np.nan    frames = [legs_disp[display_cols + ["geometry"]]]
 
     if not pt_wells.empty:
         for c in display_cols:
             if c not in pt_disp.columns:
-                pt_disp[c] = np.nan
-        frames.append(pt_disp[display_cols + ["geometry"]])
+                pt_disp[c] = np.nan        frames.append(pt_disp[display_cols + ["geometry"]])
 
     wells_final = gpd.GeoDataFrame(
         pd.concat(frames, ignore_index=True),
@@ -304,9 +299,7 @@ for c in SEC_NUM:
         continue
     r = sb.slider(c, lo, hi, (lo, hi), key=f"sf_{c}")
     if r != (lo, hi):
-        sec_ranges[c] = r
-
-sb.markdown("---")
+        sec_ranges[c] = rsb.markdown("---")
 sb.subheader("🔍 Well Filters")
 well_num_ranges = {}
 for c in WELL_NUM:
@@ -317,9 +310,7 @@ for c in WELL_NUM:
         continue
     r = sb.slider(c, lo, hi, (lo, hi), key=f"wf_{c}")
     if r != (lo, hi):
-        well_num_ranges[c] = r
-
-well_cat_filters = {}
+        well_num_ranges[c] = rwell_cat_filters = {}
 for c in WELL_CAT:
     if c not in wells_gdf.columns:
         continue
@@ -353,8 +344,7 @@ sb.caption(
 # ── Compute WF on filtered sections ──────────────────
 sec_wf = add_wf(sec_gdf[sec_mask], wf_uplift)
 sec_wf["WF Incremental Netback ($)"] = (
-    sec_wf.get("WF Incremental Oil (bbl)", 0) * oil_price
-)
+    sec_wf.get("WF Incremental Oil (bbl)", 0) * oil_price)
 sec_disp = sec_wf.to_crs(CRS_M)
 wells_disp = wells_gdf[well_mask].to_crs(CRS_M)
 
@@ -384,9 +374,7 @@ k3.metric("Total Recoverable w/ WF", f"{t_tot:,.0f} bbl")
 k4.metric(f"Incremental Netback @ ${oil_price:.0f}", f"${t_nb:,.0f}")
 
 # ── Map ───────────────────────────────────────────────
-bnds = sec_gdf.total_bounds
-cx, cy = (bnds[0] + bnds[2]) / 2, (bnds[1] + bnds[3]) / 2
-clon, clat = TO4.transform(cx, cy)
+bnds = sec_gdf.total_boundscx, cy = (bnds[0] + bnds[2]) / 2, (bnds[1] + bnds[3]) / 2clon, clat = TO4.transform(cx, cy)
 
 m = folium.Map(
     location=[clat, clon], zoom_start=11,
@@ -478,11 +466,11 @@ if lm.any():
     for c in lw.columns:
         if c != "geometry" and lw[c].dtype == object:
             lw[c] = lw[c].astype(str)
-    lj = lw.to_json()
     tip_fields = [c for c in lw.columns if c != "geometry"]
 
+    # Hitbox layer (unchanged)
     folium.GeoJson(
-        lj, name="Wells (hitbox)",
+        lw.to_json(), name="Wells (hitbox)",
         style_function=lambda _: {
             "color": "transparent", "weight": 14, "opacity": 0,
         },
@@ -496,22 +484,38 @@ if lm.any():
         ),
     ).add_to(m)
 
+    # Well Lines layer with conditional coloring
     folium.GeoJson(
-        lj, name="Well Lines",
-        style_function=lambda _: {
-            "color": "black", "weight": 0.5, "opacity": 0.8,
+        lw.to_json(), name="Well Lines",
+        style_function=lambda feature: {
+            "color": "red" if feature["properties"].get("Status") == "INV" else "black",
+            "weight": 0.5, 
+            "opacity": 0.8,
         },
     ).add_to(m)
 
-    eps = wells_disp.loc[lm, "_rep"].dropna()
-    if not eps.empty:
+    # Endpoints layer with conditional coloring
+    endpoints_gdf = wells_disp[lm].copy()
+    endpoints_gdf = endpoints_gdf.set_geometry("_rep")
+    endpoints_gdf = endpoints_gdf.rename_geometry("geometry")
+    
+    def endpoint_marker(feature):
+        status = feature["properties"].get("Status")
+        color = "red" if status == "INV" else "black"
+        return folium.CircleMarker(
+            radius=1,
+            color=color,
+            fill=True,
+            fill_color=color,
+            fill_opacity=0.8,
+            weight=1,
+        )
+
+    if not endpoints_gdf.empty:
         folium.GeoJson(
-            gpd.GeoDataFrame(geometry=list(eps), crs=CRS_M).to_json(),
+            endpoints_gdf.to_json(),
             name="Well Endpoints",
-            marker=folium.CircleMarker(
-                radius=1, color="black", fill=True,
-                fill_color="black", fill_opacity=0.8, weight=1,
-            ),
+            marker=endpoint_marker,
         ).add_to(m)
 
 pm_mask = wells_disp.geometry.geom_type == "Point"
@@ -521,12 +525,21 @@ if pm_mask.any():
         if c != "geometry" and pw[c].dtype == object:
             pw[c] = pw[c].astype(str)
     tip_fields_p = [c for c in pw.columns if c != "geometry"]
+        def point_well_marker(feature):
+        status = feature["properties"].get("Status")
+        color = "red" if status == "INV" else "black"
+        return folium.CircleMarker(
+            radius=2,
+            color=color,
+            fill=True,
+            fill_color=color,
+            fill_opacity=0.9,
+            weight=1,
+        )
+
     folium.GeoJson(
         pw.to_json(), name="Well Points",
-        marker=folium.CircleMarker(
-            radius=2, color="black", fill=True,
-            fill_color="black", fill_opacity=0.9, weight=1,
-        ),
+        marker=point_well_marker,
         tooltip=folium.GeoJsonTooltip(
             fields=tip_fields_p,
             aliases=[f"{c}:" for c in tip_fields_p],
@@ -540,16 +553,13 @@ map_data = st_folium(
     returned_objects=["all_drawings"],
 )
 
-# ── Polygon selection ─────────────────────────────────
-st.markdown("---")
+# ── Polygon selection ─────────────────────────────────st.markdown("---")
 st.header("📐 Polygon Selection — Section Analysis")
 st.caption(
     "Draw a polygon/rectangle to evaluate waterflood potential & well inventory."
 )
 
-drawings = map_data.get("all_drawings") if map_data else None
-
-if drawings and len(drawings) > 0:
+drawings = map_data.get("all_drawings") if map_data else Noneif drawings and len(drawings) > 0:
     d4 = shape(drawings[-1]["geometry"])
     d26 = shapely_transform(lambda x, y, z=None: TO26.transform(x, y), d4)
     dgdf = gpd.GeoDataFrame([{"geometry": d26}], crs=CRS_W)
@@ -579,8 +589,7 @@ if drawings and len(drawings) > 0:
             c1, c2, c3, c4 = st.columns(4)
             so = (
                 sec_hits["SectionOOIP"].sum()
-                if "SectionOOIP" in sec_hits.columns else 0
-            )
+                if "SectionOOIP" in sec_hits.columns else 0            )
             si = (
                 sec_hits["WF Incremental Oil (bbl)"].sum()
                 if "WF Incremental Oil (bbl)" in sec_hits.columns else 0
