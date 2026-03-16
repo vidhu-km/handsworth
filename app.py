@@ -77,7 +77,16 @@ def _group_heels(legs):
 
 @st.cache_resource(show_spinner="Loading spatial data…")
 def load():
-    lines = gpd.read_file("merged.shp")
+    # ── Read the two well shapefiles instead of merged.shp ──
+    existing = gpd.read_file("existing.shp")
+    inventory = gpd.read_file("inventory.shp")
+    existing["_source"] = "existing"
+    inventory["_source"] = "inventory"
+    lines = gpd.GeoDataFrame(
+        pd.concat([existing, inventory], ignore_index=True),
+        geometry="geometry",
+    )
+
     points = gpd.read_file("points.shp")
     grid = gpd.read_file("ooipsectiongrid.shp")
     bu = gpd.read_file("Bakken Units.shp")
@@ -107,10 +116,17 @@ def load():
     if "SectionOOIP" in sdf.columns:
         sdf["SectionOOIP"] = pd.to_numeric(sdf["SectionOOIP"], errors="coerce")
 
-    # ── assemble all well geometries ──────────────────
-    pts_only = points[~points["UWI"].isin(lines["UWI"])][["UWI", "geometry"]]
+    # ── assemble all well geometries (keep _source tag) ──
+    # Points that have no line counterpart default to "existing"
+    pts_only = points[~points["UWI"].isin(lines["UWI"])][["UWI", "geometry"]].copy()
+    pts_only["_source"] = "existing"
+
     all_geom = gpd.GeoDataFrame(
-        pd.concat([lines[["UWI", "geometry"]], pts_only], ignore_index=True),
+        pd.concat(
+            [lines[["UWI", "geometry", "_source"]],
+             pts_only],
+            ignore_index=True,
+        ),
         geometry="geometry", crs=CRS_W,
     )
 
@@ -129,8 +145,11 @@ def load():
         uwi00 = next((u for u in uwis if u.endswith("00")), uwis[0])
         is_ml = len(member_idxs) > 1
         label = uwi00 + " ML" if is_ml else uwi00
+        # Propagate _source from the first member (all members in a group
+        # should share the same source; if mixed, take the first)
+        src = legs.loc[member_idxs[0], "_source"]
         group_meta[gid] = dict(label=label, uwi00=uwi00, is_ml=is_ml,
-                                member_idxs=member_idxs)
+                                member_idxs=member_idxs, source=src)
         for mi in member_idxs:
             leg_to_gid[mi] = gid
 
@@ -143,7 +162,8 @@ def load():
     # ── group attribute table (from 00 UWI row) ──────
     grp_rows = []
     for gid, meta in group_meta.items():
-        row = {"_gid": gid, "Well": meta["label"], "UWI": meta["uwi00"]}
+        row = {"_gid": gid, "Well": meta["label"], "UWI": meta["uwi00"],
+               "_source": meta["source"]}
         match = wdf[wdf["UWI"] == meta["uwi00"]]
         if not match.empty:
             r = match.iloc[0]
@@ -213,30 +233,33 @@ def load():
         sec["SectionURF"] = np.nan
 
     # ── wells display GeoDataFrame ────────────────────
-    # Only keep _gid on legs for the merge, then bring in group attributes
-    legs_base = legs[["_gid", "geometry"]].copy()
+    legs_base = legs[["_gid", "_source", "geometry"]].copy()
 
-    # Columns to pull from grp_attr (excluding _gid and internal rate cols)
+    # Columns to pull from grp_attr (excluding internal rate cols but keeping _source)
     attr_cols = [c for c in grp_attr.columns
-                 if not c.startswith("_") or c == "_gid"]
-    legs_disp = legs_base.merge(grp_attr[attr_cols], on="_gid", how="left")
-    legs_disp.drop(columns=["_gid"], inplace=True, errors="ignore")
+                 if not c.startswith("_") or c in ("_gid", "_source")]
+    legs_disp = legs_base.merge(
+        grp_attr[attr_cols], on="_gid", how="left", suffixes=("", "_grp"),
+    )
+    # Use the leg-level _source (already present from legs_base)
+    legs_disp.drop(columns=["_gid", "_source_grp"], inplace=True, errors="ignore")
 
     # Point wells
     if not pt_wells.empty:
-        pt_disp = pt_wells[["UWI", "geometry"]].merge(wdf, on="UWI", how="left")
+        pt_disp = pt_wells[["UWI", "_source", "geometry"]].merge(
+            wdf, on="UWI", how="left",
+        )
         pt_disp["Well"] = pt_disp["UWI"]
         pt_disp["Hz Length (m)"] = 0.0
 
     # Build final wells GeoDataFrame with consistent columns
-    # Define the canonical column order
     display_cols = (
         ["Well", "UWI", "Section", "Hz Length (m)", "Cuml", "EUR",
          "Well Type", "Status", "Objective", "Injector", "Operator",
-         "On Prod Date", "Last Prod Date", "On Inj Date", "Last Inj Date"]
+         "On Prod Date", "Last Prod Date", "On Inj Date", "Last Inj Date",
+         "_source"]
     )
 
-    # Ensure all display columns exist in legs_disp
     for c in display_cols:
         if c not in legs_disp.columns:
             legs_disp[c] = np.nan
@@ -458,7 +481,7 @@ if gc != "None" and gc in sec_disp.columns:
 else:
     _s = lambda _: NULL_STY
 
-stf = [c for c in sec_disp.columns if c != "geometry"]
+stf = [c for c in sec_disp.columns if c not in ("geometry", "_source")]
 folium.GeoJson(
     sec_disp.to_json(), name="Section Grid", style_function=_s,
     highlight_function=lambda _: {
@@ -470,69 +493,90 @@ folium.GeoJson(
     ),
 ).add_to(m)
 
-# ── Wells on map ──────────────────────────────────────
-ttip_exclude = {"geometry", "_rep"}
-lm = wells_disp.geometry.geom_type.isin(["LineString", "MultiLineString"])
-if lm.any():
-    lw = wells_disp[lm].drop(columns=["_rep"], errors="ignore").copy()
-    for c in lw.columns:
-        if c != "geometry" and lw[c].dtype == object:
-            lw[c] = lw[c].astype(str)
-    lj = lw.to_json()
-    tip_fields = [c for c in lw.columns if c != "geometry"]
+# ── Wells on map (split by source: existing=black, inventory=red) ──
+ttip_exclude = {"geometry", "_rep", "_source"}
+# Tooltip columns (exclude internal fields)
+tip_cols_all = [c for c in wells_disp.columns if c not in ttip_exclude]
 
-    folium.GeoJson(
-        lj, name="Wells (hitbox)",
-        style_function=lambda _: {
-            "color": "transparent", "weight": 14, "opacity": 0,
-        },
-        highlight_function=lambda _: {
-            "weight": 14, "color": "#555", "opacity": 0.3,
-        },
-        tooltip=folium.GeoJsonTooltip(
-            fields=tip_fields,
-            aliases=[f"{c}:" for c in tip_fields],
-            localize=True, sticky=True, style=TIP,
-        ),
-    ).add_to(m)
+# Split into existing and inventory
+is_inv = wells_disp["_source"] == "inventory"
+wells_existing = wells_disp[~is_inv]
+wells_inventory = wells_disp[is_inv]
 
-    folium.GeoJson(
-        lj, name="Well Lines",
-        style_function=lambda _: {
-            "color": "black", "weight": 0.5, "opacity": 0.8,
-        },
-    ).add_to(m)
+for subset, color, layer_suffix in [
+    (wells_existing, "black", "Existing"),
+    (wells_inventory, "red", "Inventory"),
+]:
+    if subset.empty:
+        continue
 
-    eps = wells_disp.loc[lm, "_rep"].dropna()
-    if not eps.empty:
+    lm = subset.geometry.geom_type.isin(["LineString", "MultiLineString"])
+
+    # ── Line wells ──
+    if lm.any():
+        lw = subset[lm].drop(columns=["_rep", "_source"], errors="ignore").copy()
+        for c in lw.columns:
+            if c != "geometry" and lw[c].dtype == object:
+                lw[c] = lw[c].astype(str)
+        lj = lw.to_json()
+        tip_fields = [c for c in lw.columns if c != "geometry"]
+
+        # Invisible fat hitbox for tooltip hover
         folium.GeoJson(
-            gpd.GeoDataFrame(geometry=list(eps), crs=CRS_M).to_json(),
-            name="Well Endpoints",
-            marker=folium.CircleMarker(
-                radius=1, color="black", fill=True,
-                fill_color="black", fill_opacity=0.8, weight=1,
+            lj, name=f"Wells hitbox ({layer_suffix})",
+            style_function=lambda _, _col=color: {
+                "color": "transparent", "weight": 14, "opacity": 0,
+            },
+            highlight_function=lambda _, _col=color: {
+                "weight": 14, "color": _col, "opacity": 0.3,
+            },
+            tooltip=folium.GeoJsonTooltip(
+                fields=tip_fields,
+                aliases=[f"{c}:" for c in tip_fields],
+                localize=True, sticky=True, style=TIP,
             ),
         ).add_to(m)
 
-pm_mask = wells_disp.geometry.geom_type == "Point"
-if pm_mask.any():
-    pw = wells_disp[pm_mask].drop(columns=["_rep"], errors="ignore").copy()
-    for c in pw.columns:
-        if c != "geometry" and pw[c].dtype == object:
-            pw[c] = pw[c].astype(str)
-    tip_fields_p = [c for c in pw.columns if c != "geometry"]
-    folium.GeoJson(
-        pw.to_json(), name="Well Points",
-        marker=folium.CircleMarker(
-            radius=2, color="black", fill=True,
-            fill_color="black", fill_opacity=0.9, weight=1,
-        ),
-        tooltip=folium.GeoJsonTooltip(
-            fields=tip_fields_p,
-            aliases=[f"{c}:" for c in tip_fields_p],
-            localize=True, sticky=True, style=TIP,
-        ),
-    ).add_to(m)
+        # Visible thin line
+        folium.GeoJson(
+            lj, name=f"Well Lines ({layer_suffix})",
+            style_function=lambda _, _col=color: {
+                "color": _col, "weight": 0.5, "opacity": 0.8,
+            },
+        ).add_to(m)
+
+        # Toe endpoints
+        eps = subset.loc[lm.values, "_rep"].dropna()
+        if not eps.empty:
+            folium.GeoJson(
+                gpd.GeoDataFrame(geometry=list(eps), crs=CRS_M).to_json(),
+                name=f"Well Endpoints ({layer_suffix})",
+                marker=folium.CircleMarker(
+                    radius=1, color=color, fill=True,
+                    fill_color=color, fill_opacity=0.8, weight=1,
+                ),
+            ).add_to(m)
+
+    # ── Point wells ──
+    pm_mask = subset.geometry.geom_type == "Point"
+    if pm_mask.any():
+        pw = subset[pm_mask].drop(columns=["_rep", "_source"], errors="ignore").copy()
+        for c in pw.columns:
+            if c != "geometry" and pw[c].dtype == object:
+                pw[c] = pw[c].astype(str)
+        tip_fields_p = [c for c in pw.columns if c != "geometry"]
+        folium.GeoJson(
+            pw.to_json(), name=f"Well Points ({layer_suffix})",
+            marker=folium.CircleMarker(
+                radius=2, color=color, fill=True,
+                fill_color=color, fill_opacity=0.9, weight=1,
+            ),
+            tooltip=folium.GeoJsonTooltip(
+                fields=tip_fields_p,
+                aliases=[f"{c}:" for c in tip_fields_p],
+                localize=True, sticky=True, style=TIP,
+            ),
+        ).add_to(m)
 
 folium.LayerControl(collapsed=True).add_to(m)
 map_data = st_folium(
@@ -631,7 +675,7 @@ if drawings and len(drawings) > 0:
         if not well_unique.empty:
             st.subheader(f"🛢️ {len(well_unique)} Wells Selected")
             wc = (
-                ["Well", "UWI", "Section"]
+                ["Well", "UWI", "Section", "_source"]
                 + [c for c in WELL_NUM if c in well_unique.columns]
                 + [c for c in WELL_CAT if c in well_unique.columns]
             )
