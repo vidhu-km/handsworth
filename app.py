@@ -330,15 +330,6 @@ for c in SEC_NUM:
         sec_ranges[c] = r
 
 sb.markdown("---")
-sb.subheader("🗂 Well Source")
-
-source_sel = sb.selectbox(
-    "Show wells",
-    ["Both", "Existing", "Inventory"],
-    index=0
-)
-
-sb.markdown("---")
 sb.subheader("🔍 Well Filters")
 well_num_ranges = {}
 for c in WELL_NUM:
@@ -373,10 +364,6 @@ def mask_num(df, rngs):
 
 sec_mask = mask_num(sec_gdf, sec_ranges)
 well_mask = mask_num(wells_gdf, well_num_ranges)
-if source_sel == "Existing":
-    well_mask &= wells_gdf["_source"] == "existing"
-elif source_sel == "Inventory":
-    well_mask &= wells_gdf["_source"] == "inventory"
 for c, vals in well_cat_filters.items():
     if c in wells_gdf.columns:
         well_mask &= wells_gdf[c].astype(str).isin(vals) | wells_gdf[c].isna()
