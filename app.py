@@ -569,7 +569,7 @@ map_data = st_folium(
 st.markdown("---")
 st.header("📐 Polygon Selection — Section Analysis")
 st.caption(
-    "Draw a polygon/rectangle to evaluate waterflood potential & well inventory."
+    "Draw a polygon/rectangle to evaluate potential waterflood uplift."
 )
 
 drawings = map_data.get("all_drawings") if map_data else None
