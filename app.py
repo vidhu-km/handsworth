@@ -307,7 +307,7 @@ sb.title("🛢️ WF Unit Screener")
 
 sb.subheader("💧 Waterflood Scenario")
 oil_price = sb.slider("Netback ($/bbl)", 0.0, 75.0, 35.0, 1.0)
-wf_uplift = sb.slider("Waterflood RF Uplift (% pts)", 0.0, 50.0, 5.0, 0.5,
+wf_uplift = sb.slider("Waterflood RF Uplift (% pts)", 0.0, 10.0, 5.9, 0.1,
                        help="Additive percentage-point increase in recovery factor")
 
 sb.markdown("---")
