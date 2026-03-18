@@ -385,26 +385,7 @@ ALL_SEC = SEC_NUM + [
     c for c in WF_COLS + ["WF Incremental Netback ($)"] if c in sec_wf.columns
 ]
 
-# ── KPIs ──────────────────────────────────────────────
 st.title("🛢️ Bakken WF Section Screening Tool")
-k1, k2, k3, k4 = st.columns(4)
-t_ooip = sec_wf["SectionOOIP"].sum() if "SectionOOIP" in sec_wf.columns else 0
-t_incr = (
-    sec_wf["WF Incremental Oil (bbl)"].sum()
-    if "WF Incremental Oil (bbl)" in sec_wf.columns else 0
-)
-t_nb = (
-    sec_wf["WF Incremental Netback ($)"].sum()
-    if "WF Incremental Netback ($)" in sec_wf.columns else 0
-)
-t_tot = (
-    sec_wf["Total Recoverable (bbl)"].sum()
-    if "Total Recoverable (bbl)" in sec_wf.columns else 0
-)
-k1.metric("OOIP (filtered)", f"{t_ooip:,.0f} bbl")
-k2.metric(f"WF Incremental @ {wf_uplift:.1f}% pts", f"{t_incr:,.0f} bbl")
-k3.metric("Total Recoverable w/ WF", f"{t_tot:,.0f} bbl")
-k4.metric(f"Incremental Netback @ ${oil_price:.0f}", f"${t_nb:,.0f}")
 
 # ── Map ───────────────────────────────────────────────
 bnds = sec_gdf.total_bounds
