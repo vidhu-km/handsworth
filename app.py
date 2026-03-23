@@ -77,8 +77,7 @@ def _group_heels(legs):
 
 @st.cache_resource(show_spinner="Loading spatial data…")
 def load():
-    # ── Read the two well shapefiles instead of merged.shp ──
-    existing = gpd.read_file("existing.shp")
+    existing = gpd.read_file("lines.shp")
     inventory = gpd.read_file("inventory.shp")
     existing["_source"] = "existing"
     inventory["_source"] = "inventory"
