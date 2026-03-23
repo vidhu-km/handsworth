@@ -4,7 +4,6 @@ import pandas as pd
 import numpy as np
 import pydeck as pdk
 from shapely.geometry import Point
-from shapely.ops import transform as shapely_transform
 from pyproj import Transformer
 import json
 
@@ -13,7 +12,6 @@ st.set_page_config(layout="wide", page_title="Bakken WF Section Screener", page_
 CRS_W = "EPSG:26913"
 CRS_M = "EPSG:4326"
 TO4 = Transformer.from_crs(CRS_W, CRS_M, always_xy=True)
-TO26 = Transformer.from_crs(CRS_M, CRS_W, always_xy=True)
 
 WELL_NUM = ["Hz Length (m)", "Cuml", "EUR"]
 WELL_CAT = ["Well Type", "Status", "Objective", "Injector", "Operator"]
@@ -244,10 +242,33 @@ def add_wf(df, uplift):
     return d
 
 
+# ── Session state init ────────────────────────────────
+if "selected_sections" not in st.session_state:
+    st.session_state.selected_sections = set()
+if "run_analysis" not in st.session_state:
+    st.session_state.run_analysis = False
+
 # ── Sidebar ───────────────────────────────────────────
 sb = st.sidebar
 sb.title("🛢️ WF Unit Screener")
 
+n_sel = len(st.session_state.selected_sections)
+sb.markdown(f"**{n_sel} section{'s' if n_sel != 1 else ''} selected**")
+
+col_clear, col_run = sb.columns(2)
+with col_clear:
+    if st.button("❌ Clear", disabled=(n_sel == 0), use_container_width=True):
+        st.session_state.selected_sections = set()
+        st.session_state.run_analysis = False
+        st.rerun()
+with col_run:
+    if st.button("🚀 Run", type="primary", disabled=(n_sel == 0), use_container_width=True):
+        st.session_state.run_analysis = True
+
+if st.session_state.selected_sections:
+    sb.caption("Selected: " + ", ".join(sorted(st.session_state.selected_sections)))
+
+sb.markdown("---")
 sb.subheader("💧 Waterflood Scenario")
 oil_price = sb.slider("Netback ($/bbl)", 0.0, 75.0, 35.0, 1.0)
 wf_uplift = sb.slider("Waterflood RF Uplift (% pts)", 0.0, 10.0, 5.9, 0.1)
@@ -326,38 +347,18 @@ sb.caption(f"Sections: **{sec_mask.sum()}** / {len(sec_gdf)}  •  Wells: **{wel
 sec_wf = add_wf(sec_gdf[sec_mask], wf_uplift)
 sec_wf["WF Incremental Netback ($)"] = sec_wf.get("WF Incremental Oil (bbl)", 0) * oil_price
 wells_disp = wells_gdf[well_mask].copy()
-
 ALL_SEC = SEC_NUM + [c for c in WF_COLS + ["WF Incremental Netback ($)"] if c in sec_wf.columns]
 
-# ── SECTION SELECTOR + RUN BUTTON ─────────────────────
+# ── Title ─────────────────────────────────────────────
 st.title("🛢️ Bakken WF Section Screening Tool")
+st.caption("🖱️ Click sections on the map to select/deselect. Then hit **Run** in the sidebar.")
 
-all_sections = sorted(sec_wf["Section"].dropna().unique().tolist())
-
-col_sel, col_btn = st.columns([5, 1])
-with col_sel:
-    selected_sections = st.multiselect(
-        "Select sections for analysis",
-        options=all_sections,
-        default=st.session_state.get("locked_sections", []),
-        key="section_picker",
-        placeholder="Click to select sections…",
-    )
-with col_btn:
-    st.markdown("<br>", unsafe_allow_html=True)
-    run_clicked = st.button("🚀 Run Analysis", type="primary", use_container_width=True)
-
-if run_clicked:
-    st.session_state.locked_sections = list(selected_sections)
-
-# The sections to highlight on map & analyze
-active_sections = set(st.session_state.get("locked_sections", []))
-
-# ── Prepare PyDeck data ──────────────────────────────
+# ── Build map data ────────────────────────────────────
 def to_geojson_4326(gdf):
     return json.loads(gdf.to_crs(CRS_M).to_json())
 
 
+selected_secs = st.session_state.selected_sections
 HIGHLIGHT_COLOR = [30, 130, 230, 180]
 
 sec_4326 = sec_wf.to_crs(CRS_M).copy()
@@ -380,7 +381,7 @@ else:
 fill_colors, line_colors = [], []
 for _, row in sec_4326.iterrows():
     sec_id = str(row.get("Section", ""))
-    if sec_id in active_sections:
+    if sec_id in selected_secs:
         fill_colors.append(HIGHLIGHT_COLOR)
         line_colors.append([30, 130, 230, 255])
     else:
@@ -509,23 +510,53 @@ tooltip = {
               "border": "1px solid #333", "borderRadius": "3px"},
 }
 
-# No on_select — map is display-only, no reruns on click
-st.pydeck_chart(
-    pdk.Deck(layers=layers, initial_view_state=pdk.ViewState(
-        latitude=clat, longitude=clon, zoom=11, pitch=0, bearing=0,
-    ), map_style="light", tooltip=tooltip),
-    use_container_width=True, height=850,
+event = st.pydeck_chart(
+    pdk.Deck(
+        layers=layers,
+        initial_view_state=pdk.ViewState(latitude=clat, longitude=clon, zoom=11, pitch=0, bearing=0),
+        map_style="light",
+        tooltip=tooltip,
+    ),
+    use_container_width=True,
+    height=850,
+    on_select="rerun",
+    selection_mode="single-object",
 )
 
-# ── Analysis (only after Run) ─────────────────────────
+# ── Handle click → toggle selection (NO analysis yet) ─
+if event and event.selection:
+    sel_objects = event.selection.get("objects", {})
+    clicked_section = None
+    for key, obj_list in sel_objects.items():
+        if isinstance(obj_list, list):
+            for obj in obj_list:
+                if isinstance(obj, dict) and "Section" in obj:
+                    clicked_section = str(obj["Section"])
+                    break
+        if clicked_section:
+            break
+
+    if clicked_section:
+        if clicked_section in st.session_state.selected_sections:
+            st.session_state.selected_sections.discard(clicked_section)
+        else:
+            st.session_state.selected_sections.add(clicked_section)
+        # Reset run flag so analysis doesn't auto-show on new selections
+        st.session_state.run_analysis = False
+        st.rerun()
+
+# ── Analysis (ONLY when Run is clicked) ───────────────
 st.markdown("---")
 st.header("📐 Selected Sections — Analysis")
 
-if not active_sections:
-    st.info("Select sections from the dropdown above and click **Run Analysis**.")
+if not st.session_state.run_analysis:
+    if st.session_state.selected_sections:
+        st.info(f"**{len(st.session_state.selected_sections)}** sections selected. Click **🚀 Run** in the sidebar to analyze.")
+    else:
+        st.info("Click sections on the map to select them, then click **🚀 Run** in the sidebar.")
 else:
-    sel_secs = active_sections
-    st.caption(f"**{len(sel_secs)}** sections selected.")
+    sel_secs = st.session_state.selected_sections
+    st.caption(f"**{len(sel_secs)}** sections analyzed.")
 
     sec_hits = sec_wf[sec_wf["Section"].isin(sel_secs)].copy()
     well_hits = wells_gdf[well_mask & wells_gdf["Section"].isin(sel_secs)].copy()
