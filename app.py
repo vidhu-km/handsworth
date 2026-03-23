@@ -639,50 +639,6 @@ if drawings and len(drawings) > 0:
                 "📥 Sections CSV", sdet.to_csv(index=False),
                 "polygon_sections.csv", "text/csv",
             )
-
-        if not well_unique.empty:
-            st.subheader(f"🛢️ {len(well_unique)} Wells Selected")
-            wc = (
-                ["Well", "UWI", "Section", "_source"]
-                + [c for c in WELL_NUM if c in well_unique.columns]
-                + [c for c in WELL_CAT if c in well_unique.columns]
-            )
-            wc = [c for c in wc if c in well_unique.columns]
-            wdet = well_unique[wc].reset_index(drop=True)
-
-            wk1, wk2, wk3 = st.columns(3)
-            wk1.metric(
-                "Total EUR",
-                f"{well_unique['EUR'].sum():,.0f} bbl"
-                if "EUR" in well_unique.columns else "—",
-            )
-            wk2.metric(
-                "Total Cuml",
-                f"{well_unique['Cuml'].sum():,.0f} bbl"
-                if "Cuml" in well_unique.columns else "—",
-            )
-            wk3.metric(
-                "Avg Hz Length",
-                f"{well_unique['Hz Length (m)'].mean():,.0f} m"
-                if "Hz Length (m)" in well_unique.columns else "—",
-            )
-
-            with st.expander("Well Detail", expanded=False):
-                st.dataframe(wdet, use_container_width=True)
-
-            wagg_cols = [c for c in WELL_NUM if c in well_unique.columns]
-            wagg = pd.DataFrame({
-                "Metric": wagg_cols,
-                "Sum": [well_unique[c].sum() for c in wagg_cols],
-                "Mean": [well_unique[c].mean() for c in wagg_cols],
-                "Count": [well_unique[c].count() for c in wagg_cols],
-            })
-            with st.expander("Well Aggregates", expanded=False):
-                st.dataframe(wagg, use_container_width=True)
-            st.download_button(
-                "📥 Wells CSV", wdet.to_csv(index=False),
-                "polygon_wells.csv", "text/csv", key="dl_wells",
-            )
 else:
     st.info(
         "Draw a polygon or rectangle on the map to evaluate "
