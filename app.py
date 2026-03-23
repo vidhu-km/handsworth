@@ -630,28 +630,6 @@ if drawings and len(drawings) > 0:
             c3.metric("Total Recoverable w/ WF", f"{st_:,.0f} bbl")
             c4.metric("Incremental Netback", f"${sr:,.0f}")
 
-            st.subheader("Waterflood Uplift Sensitivity")
-            sens = []
-            for p in [1, 2, 3, 5, 7.5, 10, 15, 20, 25, 30]:
-                tmp = add_wf(sec_hits, p)
-                inc = (
-                    tmp["WF Incremental Oil (bbl)"].sum()
-                    if "WF Incremental Oil (bbl)" in tmp.columns else 0
-                )
-                tot = (
-                    tmp["Total Recoverable (bbl)"].sum()
-                    if "Total Recoverable (bbl)" in tmp.columns else 0
-                )
-                sens.append({
-                    "Uplift (% pts)": p,
-                    "Incremental Oil (bbl)": round(inc),
-                    "Total Recoverable (bbl)": round(tot),
-                    f"Netback @ ${oil_price:.0f}/bbl": round(inc * oil_price),
-                })
-            st.dataframe(
-                pd.DataFrame(sens), use_container_width=True, hide_index=True,
-            )
-
             scols = ["Section"] + [
                 c for c in ALL_SEC if c in sec_hits.columns
             ]
