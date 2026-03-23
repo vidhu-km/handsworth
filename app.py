@@ -73,10 +73,9 @@ OVERLAY_LAYERS = [
         "name": "Bakken Sw Line",
         "file": "Bakken Sw Line_plyln.shp",
         "style": {
-            "color": "#d32f2f",
+            "color": "#0000ff",
             "weight": 2,
             "fillOpacity": 0,
-            "dashArray": "6 4",
         },
         "tooltip": True,
     },
@@ -85,9 +84,10 @@ OVERLAY_LAYERS = [
         "name": "T1 and T2 Contours",
         "file": "T1 and T2 Contours_expanded_plyln.shp",
         "style": {
-            "color": "#1565c0",
+            "color": "#ff0000",
             "weight": 1.5,
             "fillOpacity": 0,
+            "dashArray": "6 4",
         },
         "tooltip": True,
     },
