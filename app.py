@@ -380,6 +380,13 @@ sec_wf["WF Incremental Netback ($)"] = (
 sec_disp = sec_wf.to_crs(CRS_M)
 wells_disp = wells_gdf[well_mask].to_crs(CRS_M)
 
+# Split
+is_inv = wells_disp["_source"] == "inventory"
+wells_existing = wells_disp[~is_inv]
+wells_inventory = wells_disp[is_inv]
+
+# Then your single-layer plotting code
+
 ALL_SEC = SEC_NUM + [
     c for c in WF_COLS + ["WF Incremental Netback ($)"] if c in sec_wf.columns
 ]
