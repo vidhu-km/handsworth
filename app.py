@@ -23,6 +23,89 @@ WELL_NUM = ["Hz Length (m)", "Cuml", "EUR"]
 WELL_CAT = ["Well Type", "Status", "Objective", "Injector", "Operator"]
 HEEL_TOL = 1.0
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# LAYER REGISTRY — add / remove / reorder / edit layers here.
+#
+# Each entry is a dict with these keys:
+#   "name"      : layer name in the layer control
+#   "file"      : shapefile path
+#   "style"     : dict passed to style_function (static style)
+#   "simplify"  : optional tolerance (metres) to simplify geometries
+#   "tooltip"   : True to add a tooltip with all attribute fields (default False)
+#
+# Layers render in the order listed (first = bottom).
+# ═══════════════════════════════════════════════════════════════════════════════
+OVERLAY_LAYERS = [
+    # ── 1. Bakken Land ────────────────────────────────────────────────────────
+    {
+        "name": "Bakken Land",
+        "file": "Bakken Land.shp",
+        "style": {
+            "fillColor": "#fff9c4",
+            "color": "#fff9c4",
+            "weight": 0.5,
+            "fillOpacity": 0.15,
+        },
+        "simplify": 50,
+    },
+    # ── 2. Bakken Units ──────────────────────────────────────────────────────
+    {
+        "name": "Bakken Units",
+        "file": "Bakken Units.shp",
+        "style": {
+            "color": "black",
+            "weight": 3,
+            "fillOpacity": 0,
+        },
+    },
+    # ── 3. Handsworth Units ──────────────────────────────────────────────────
+    {
+        "name": "Handsworth Units",
+        "file": "Handsworth Units.shp",
+        "style": {
+            "color": "black",
+            "weight": 3,
+            "fillOpacity": 0,
+        },
+    },
+    # ── 4. Bakken Sw Line ────────────────────────────────────────────────────
+    {
+        "name": "Bakken Sw Line",
+        "file": "Bakken Sw Line_plyln.shp",
+        "style": {
+            "color": "#d32f2f",
+            "weight": 2,
+            "fillOpacity": 0,
+            "dashArray": "6 4",
+        },
+        "tooltip": True,
+    },
+    # ── 5. T1 and T2 Contours ───────────────────────────────────────────────
+    {
+        "name": "T1 and T2 Contours",
+        "file": "T1 and T2 Contours_expanded_plyln.shp",
+        "style": {
+            "color": "#1565c0",
+            "weight": 1.5,
+            "fillOpacity": 0,
+        },
+        "tooltip": True,
+    },
+    # ── COPY-PASTE TEMPLATE (uncomment & fill in) ────────────────────────────
+    # {
+    #     "name": "My New Layer",
+    #     "file": "my_layer.shp",
+    #     "style": {
+    #         "color": "purple",
+    #         "weight": 2,
+    #         "fillOpacity": 0,
+    #     },
+    #     "simplify": None,
+    #     "tooltip": True,
+    # },
+]
+# ═══════════════════════════════════════════════════════════════════════════════
+
 
 def safe_range(s):
     v = s.replace([np.inf, -np.inf], np.nan).dropna()
@@ -88,35 +171,51 @@ def load():
 
     points = gpd.read_file("points.shp")
     grid = gpd.read_file("ooipsectiongrid.shp")
-    bu = gpd.read_file("Bakken Units.shp")
-    hu = gpd.read_file("Handsworth Units.shp")
-    land = gpd.read_file("Bakken Land.shp")
-    wdf = pd.read_excel("wells.xlsx", sheet_name=0)
-    sdf = pd.read_excel("wells.xlsx", sheet_name=1)
 
-    for g in [lines, points, grid, bu, hu, land]:
+    # ── Load overlay layers from the registry ─────────
+    overlay_jsons = {}
+    for layer_def in OVERLAY_LAYERS:
+        lname = layer_def["name"]
+        try:
+            gdf = gpd.read_file(layer_def["file"])
+            if gdf.crs is None:
+                gdf.set_crs(CRS_W, inplace=True)
+            gdf.to_crs(CRS_W, inplace=True)
+            simp = layer_def.get("simplify")
+            if simp:
+                gdf["geometry"] = gdf.geometry.simplify(simp, preserve_topology=True)
+            overlay_jsons[lname] = gdf.to_crs(CRS_M).to_json()
+        except Exception as e:
+            st.warning(f"Could not load layer '{lname}': {e}")
+            overlay_jsons[lname] = None
+
+    # ── Well attribute table (single-sheet xlsx) ──────
+    wdf = pd.read_excel("wells.xlsx")
+
+    for g in [lines, points, grid]:
         if g.crs is None:
             g.set_crs(CRS_W, inplace=True)
         g.to_crs(CRS_W, inplace=True)
 
     grid["geometry"] = grid.geometry.simplify(50, preserve_topology=True)
-    land["geometry"] = land.geometry.simplify(50, preserve_topology=True)
 
     grid["Section"] = grid["Section"].astype(str).str.strip()
     wdf["UWI"] = wdf["UWI"].astype(str).str.strip()
     wdf["Section"] = wdf["Section"].astype(str).str.strip()
-    sdf["Section"] = sdf["Section"].astype(str).str.strip()
     lines["UWI"] = lines["UWI"].astype(str).str.strip()
     points["UWI"] = points["UWI"].astype(str).str.strip()
 
     for c in ["Cuml", "EUR"]:
         if c in wdf.columns:
             wdf[c] = pd.to_numeric(wdf[c], errors="coerce")
-    if "SectionOOIP" in sdf.columns:
-        sdf["SectionOOIP"] = pd.to_numeric(sdf["SectionOOIP"], errors="coerce")
+
+    # ── OOIP comes from the grid shapefile attribute ──
+    if "OOIP" in grid.columns:
+        grid["SectionOOIP"] = pd.to_numeric(grid["OOIP"], errors="coerce").fillna(0)
+    else:
+        grid["SectionOOIP"] = 0.0
 
     # ── assemble all well geometries (keep _source tag) ──
-    # Points that have no line counterpart default to "existing"
     pts_only = points[~points["UWI"].isin(lines["UWI"])][["UWI", "geometry"]].copy()
     pts_only["_source"] = "existing"
 
@@ -144,8 +243,6 @@ def load():
         uwi00 = next((u for u in uwis if u.endswith("00")), uwis[0])
         is_ml = len(member_idxs) > 1
         label = uwi00 + " ML" if is_ml else uwi00
-        # Propagate _source from the first member (all members in a group
-        # should share the same source; if mixed, take the first)
         src = legs.loc[member_idxs[0], "_source"]
         group_meta[gid] = dict(label=label, uwi00=uwi00, is_ml=is_ml,
                                 member_idxs=member_idxs, source=src)
@@ -155,7 +252,6 @@ def load():
     legs["_gid"] = legs.index.map(leg_to_gid)
     legs["_leg_length_m"] = legs.geometry.length
 
-    # total group length
     grp_len = legs.groupby("_gid")["_leg_length_m"].sum().rename("_total_length_m")
 
     # ── group attribute table (from 00 UWI row) ──────
@@ -175,7 +271,6 @@ def load():
     grp_attr = grp_attr.merge(grp_len.reset_index(), on="_gid", how="left")
     grp_attr.rename(columns={"_total_length_m": "Hz Length (m)"}, inplace=True)
 
-    # production per metre
     for col in ["Cuml", "EUR"]:
         if col in grp_attr.columns:
             grp_attr[f"_{col}_per_m"] = (
@@ -189,17 +284,14 @@ def load():
     overlay = gpd.overlay(legs_ov, sec_ov, how="intersection")
     overlay["_int_length_m"] = overlay.geometry.length
 
-    # merge rates
     rate_cols = [c for c in grp_attr.columns if c.endswith("_per_m")]
     overlay = overlay.merge(grp_attr[["_gid"] + rate_cols], on="_gid", how="left")
 
-    # allocate
     for col in ["Cuml", "EUR"]:
         pm = f"_{col}_per_m"
         if pm in overlay.columns:
             overlay[f"_alloc_{col}"] = overlay[pm] * overlay["_int_length_m"]
 
-    # sum by section
     alloc_cols = [c for c in overlay.columns if c.startswith("_alloc_")]
     sec_alloc = overlay.groupby("Section")[alloc_cols].sum().reset_index()
     sec_alloc.rename(columns={
@@ -208,42 +300,34 @@ def load():
     }, inplace=True)
 
     # ── build section GeoDataFrame ────────────────────
-    sec = grid.merge(sdf, on="Section", how="left")
+    sec = grid.copy()
     sec = sec.merge(sec_alloc, on="Section", how="left")
 
     for c in ["SectionCuml", "SectionEUR"]:
         if c in sec.columns:
             sec[c] = sec[c].fillna(0)
 
-    if "SectionOOIP" in sec.columns:
-        sec["SectionOOIP"] = sec["SectionOOIP"].fillna(0)
-        sec["SectionRF"] = np.where(
-            sec["SectionOOIP"] > 0,
-            sec["SectionCuml"] / sec["SectionOOIP"],
-            np.nan,
-        )
-        sec["SectionURF"] = np.where(
-            sec["SectionOOIP"] > 0,
-            sec["SectionEUR"] / sec["SectionOOIP"],
-            np.nan,
-        )
-    else:
-        sec["SectionRF"] = np.nan
-        sec["SectionURF"] = np.nan
+    sec["SectionRF"] = np.where(
+        sec["SectionOOIP"] > 0,
+        sec["SectionCuml"] / sec["SectionOOIP"],
+        np.nan,
+    )
+    sec["SectionURF"] = np.where(
+        sec["SectionOOIP"] > 0,
+        sec["SectionEUR"] / sec["SectionOOIP"],
+        np.nan,
+    )
 
     # ── wells display GeoDataFrame ────────────────────
     legs_base = legs[["_gid", "_source", "geometry"]].copy()
 
-    # Columns to pull from grp_attr (excluding internal rate cols but keeping _source)
     attr_cols = [c for c in grp_attr.columns
                  if not c.startswith("_") or c in ("_gid", "_source")]
     legs_disp = legs_base.merge(
         grp_attr[attr_cols], on="_gid", how="left", suffixes=("", "_grp"),
     )
-    # Use the leg-level _source (already present from legs_base)
     legs_disp.drop(columns=["_gid", "_source_grp"], inplace=True, errors="ignore")
 
-    # Point wells
     if not pt_wells.empty:
         pt_disp = pt_wells[["UWI", "_source", "geometry"]].merge(
             wdf, on="UWI", how="left",
@@ -251,7 +335,6 @@ def load():
         pt_disp["Well"] = pt_disp["UWI"]
         pt_disp["Hz Length (m)"] = 0.0
 
-    # Build final wells GeoDataFrame with consistent columns
     display_cols = (
         ["Well", "UWI", "Section", "Hz Length (m)", "Cuml", "EUR",
          "Well Type", "Status", "Objective", "Injector", "Operator",
@@ -277,15 +360,10 @@ def load():
     )
     wells_final["_rep"] = wells_final.geometry.apply(toe_point)
 
-    # ── overlay JSON ──────────────────────────────────
-    land_j = land.to_crs(CRS_M).to_json()
-    bu_j = bu.to_crs(CRS_M).to_json()
-    hu_j = hu.to_crs(CRS_M).to_json()
-
-    return wells_final, sec, land_j, bu_j, hu_j
+    return wells_final, sec, overlay_jsons
 
 
-wells_gdf, sec_gdf, land_json, bu_json, hu_json = load()
+wells_gdf, sec_gdf, overlay_jsons = load()
 
 SEC_NUM = [c for c in ["SectionOOIP", "SectionCuml", "SectionRF",
                         "SectionEUR", "SectionURF"] if c in sec_gdf.columns]
@@ -409,32 +487,32 @@ Draw(
     edit_options=dict(edit=False),
 ).add_to(m)
 
-# Land
-folium.GeoJson(
-    land_json, name="Bakken Land",
-    style_function=lambda _: {
-        "fillColor": "#fff9c4", "color": "#fff9c4",
-        "weight": 0.5, "fillOpacity": 0.15,
-    },
-).add_to(m)
+# ── Overlay layers (rendered in registry order) ──────
+for layer_def in OVERLAY_LAYERS:
+    lname = layer_def["name"]
+    lj = overlay_jsons.get(lname)
+    if lj is None:
+        continue
+    style = layer_def["style"]
+    kwargs = dict(
+        name=lname,
+        style_function=lambda _, _s=style: _s,
+    )
+    if layer_def.get("tooltip"):
+        # Parse geojson to get field names for tooltip
+        import json as _json
+        _parsed = _json.loads(lj)
+        _props = _parsed.get("features", [{}])[0].get("properties", {})
+        _fields = [k for k in _props.keys()]
+        if _fields:
+            kwargs["tooltip"] = folium.GeoJsonTooltip(
+                fields=_fields,
+                aliases=[f"{f}:" for f in _fields],
+                localize=True, sticky=True, style=TIP,
+            )
+    folium.GeoJson(lj, **kwargs).add_to(m)
 
-# Units
-folium.GeoJson(
-    bu_json, name="Bakken Units",
-    style_function=lambda _: {
-        "color": "black", "weight": 3,
-        "fillOpacity": 0,
-    },
-).add_to(m)
-folium.GeoJson(
-    hu_json, name="Handsworth Units",
-    style_function=lambda _: {
-        "color": "black", "weight": 3,
-        "fillOpacity": 0,
-    },
-).add_to(m)
-
-# Section grid colouring
+# ── Section grid colouring ────────────────────────────
 gc = section_gradient
 if gc != "None" and gc in sec_disp.columns:
     vals = sec_disp[gc].dropna()
@@ -475,10 +553,8 @@ folium.GeoJson(
 
 # ── Wells on map (split by source: existing=black, inventory=red) ──
 ttip_exclude = {"geometry", "_rep", "_source"}
-# Tooltip columns (exclude internal fields)
 tip_cols_all = [c for c in wells_disp.columns if c not in ttip_exclude]
 
-# Split into existing and inventory
 is_inv = wells_disp["_source"] == "inventory"
 wells_existing = wells_disp[~is_inv]
 wells_inventory = wells_disp[is_inv]
@@ -494,7 +570,6 @@ for subset, color, layer_suffix in [
 
     lm = subset.geometry.geom_type.isin(["LineString", "MultiLineString"])
 
-    # ── Line wells ──
     if lm.any():
         lw = subset[lm].drop(columns=["_rep", "_source"], errors="ignore").copy()
 
@@ -505,7 +580,6 @@ for subset, color, layer_suffix in [
         lj = lw.to_json()
         tip_fields = [c for c in lw.columns if c != "geometry"]
 
-        # Invisible fat hitbox for tooltip hover
         folium.GeoJson(
             lj,
             style_function=lambda _, _col=color: {
@@ -527,7 +601,6 @@ for subset, color, layer_suffix in [
             ),
         ).add_to(layer_group)
 
-        # Visible thin line
         folium.GeoJson(
             lj,
             style_function=lambda _, _col=color: {
@@ -537,7 +610,6 @@ for subset, color, layer_suffix in [
             },
         ).add_to(layer_group)
 
-        # Toe endpoints
         eps = subset.loc[lm.values, "_rep"].dropna()
         if not eps.empty:
             folium.GeoJson(
@@ -552,10 +624,8 @@ for subset, color, layer_suffix in [
                 ),
             ).add_to(layer_group)
 
-    # Add the whole group as ONE layer
     layer_group.add_to(m)
 
-    # ── Point wells ──
     pm_mask = subset.geometry.geom_type == "Point"
     if pm_mask.any():
         pw = subset[pm_mask].drop(columns=["_rep", "_source"], errors="ignore").copy()
@@ -610,13 +680,12 @@ if drawings and len(drawings) > 0:
     sec_hits = gpd.sjoin(sec_wf, dgdf, how="inner", predicate="intersects")
     sec_hits = sec_hits.drop(columns=["index_right"], errors="ignore")
 
-    # Wells — intersects (any leg touching polygon)
+    # Wells — intersects
     well_hits = gpd.sjoin(
         wells_gdf[well_mask], dgdf, how="inner", predicate="intersects",
     )
     well_hits = well_hits.drop(columns=["index_right"], errors="ignore")
 
-    # Deduplicate by Well label for summary (multilateral legs share label)
     well_unique = (
         well_hits.drop_duplicates(subset="Well")
         if "Well" in well_hits.columns
