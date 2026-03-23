@@ -575,9 +575,19 @@ st.caption(
 drawings = map_data.get("all_drawings") if map_data else None
 
 if drawings and len(drawings) > 0:
-    d4 = shape(drawings[-1]["geometry"])
-    d26 = shapely_transform(lambda x, y, z=None: TO26.transform(x, y), d4)
-    dgdf = gpd.GeoDataFrame([{"geometry": d26}], crs=CRS_W)
+    polys = [shape(d["geometry"]) for d in drawings if d["geometry"]["type"] == "Polygon"]
+
+    if len(polys) > 0:
+        from shapely.ops import unary_union
+
+        combined = unary_union(polys)
+
+        d26 = shapely_transform(
+            lambda x, y, z=None: TO26.transform(x, y),
+            combined
+        )
+
+        dgdf = gpd.GeoDataFrame([{"geometry": d26}], crs=CRS_W)
 
     # Sections — intersects
     sec_hits = gpd.sjoin(sec_wf, dgdf, how="inner", predicate="intersects")
