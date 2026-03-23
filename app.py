@@ -473,90 +473,53 @@ folium.GeoJson(
     ),
 ).add_to(m)
 
-# ── Wells on map (split by source: existing=black, inventory=red) ──
-ttip_exclude = {"geometry", "_rep", "_source"}
-# Tooltip columns (exclude internal fields)
-tip_cols_all = [c for c in wells_disp.columns if c not in ttip_exclude]
+# ── Wells on map (single unified layer) ──
+def style_fn(color):
+    return lambda _: {
+        "color": color,
+        "weight": 2,
+        "opacity": 0.8,
+        "fillOpacity": 0.6,
+    }
 
-# Split into existing and inventory
-is_inv = wells_disp["_source"] == "inventory"
-wells_existing = wells_disp[~is_inv]
-wells_inventory = wells_disp[is_inv]
+def point_style(color):
+    return {
+        "radius": 3,
+        "color": color,
+        "fill": True,
+        "fill_color": color,
+        "fill_opacity": 0.9,
+        "weight": 1,
+    }
 
-for subset, color, layer_suffix in [
-    (wells_existing, "black", "Existing"),
-    (wells_inventory, "red", "Inventory"),
+for subset, color, name in [
+    (wells_existing, "black", "Wells (Existing)"),
+    (wells_inventory, "red", "Wells (Inventory)"),
 ]:
     if subset.empty:
         continue
 
-    lm = subset.geometry.geom_type.isin(["LineString", "MultiLineString"])
+    g = subset.drop(columns=["_rep"], errors="ignore").copy()
 
-    # ── Line wells ──
-    if lm.any():
-        lw = subset[lm].drop(columns=["_rep", "_source"], errors="ignore").copy()
-        for c in lw.columns:
-            if c != "geometry" and lw[c].dtype == object:
-                lw[c] = lw[c].astype(str)
-        lj = lw.to_json()
-        tip_fields = [c for c in lw.columns if c != "geometry"]
+    for c in g.columns:
+        if c != "geometry" and g[c].dtype == object:
+            g[c] = g[c].astype(str)
 
-        # Invisible fat hitbox for tooltip hover
-        folium.GeoJson(
-            lj, name=f"Wells hitbox ({layer_suffix})",
-            style_function=lambda _, _col=color: {
-                "color": "transparent", "weight": 14, "opacity": 0,
-            },
-            highlight_function=lambda _, _col=color: {
-                "weight": 14, "color": _col, "opacity": 0.3,
-            },
-            tooltip=folium.GeoJsonTooltip(
-                fields=tip_fields,
-                aliases=[f"{c}:" for c in tip_fields],
-                localize=True, sticky=True, style=TIP,
-            ),
-        ).add_to(m)
+    tip_fields = [c for c in g.columns if c != "geometry"]
 
-        # Visible thin line
-        folium.GeoJson(
-            lj, name=f"Well Lines ({layer_suffix})",
-            style_function=lambda _, _col=color: {
-                "color": _col, "weight": 0.5, "opacity": 0.8,
-            },
-        ).add_to(m)
-
-        # Toe endpoints
-        eps = subset.loc[lm.values, "_rep"].dropna()
-        if not eps.empty:
-            folium.GeoJson(
-                gpd.GeoDataFrame(geometry=list(eps), crs=CRS_M).to_json(),
-                name=f"Well Endpoints ({layer_suffix})",
-                marker=folium.CircleMarker(
-                    radius=1, color=color, fill=True,
-                    fill_color=color, fill_opacity=0.8, weight=1,
-                ),
-            ).add_to(m)
-
-    # ── Point wells ──
-    pm_mask = subset.geometry.geom_type == "Point"
-    if pm_mask.any():
-        pw = subset[pm_mask].drop(columns=["_rep", "_source"], errors="ignore").copy()
-        for c in pw.columns:
-            if c != "geometry" and pw[c].dtype == object:
-                pw[c] = pw[c].astype(str)
-        tip_fields_p = [c for c in pw.columns if c != "geometry"]
-        folium.GeoJson(
-            pw.to_json(), name=f"Well Points ({layer_suffix})",
-            marker=folium.CircleMarker(
-                radius=2, color=color, fill=True,
-                fill_color=color, fill_opacity=0.9, weight=1,
-            ),
-            tooltip=folium.GeoJsonTooltip(
-                fields=tip_fields_p,
-                aliases=[f"{c}:" for c in tip_fields_p],
-                localize=True, sticky=True, style=TIP,
-            ),
-        ).add_to(m)
+    folium.GeoJson(
+        g.to_json(),
+        name=name,
+        style_function=style_fn(color),
+        marker=folium.CircleMarker(**point_style(color)),
+        tooltip=folium.GeoJsonTooltip(
+            fields=tip_fields,
+            aliases=[f"{c}:" for c in tip_fields],
+            localize=True,
+            sticky=True,
+            style=TIP,
+        ),
+    ).add_to(m)
 
 folium.LayerControl(collapsed=True).add_to(m)
 map_data = st_folium(
