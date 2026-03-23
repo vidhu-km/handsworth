@@ -490,68 +490,69 @@ for subset, color, layer_suffix in [
     if subset.empty:
         continue
 
-    lm = subset.geometry.geom_type.isin(["LineString", "MultiLineString"])
-
-    # ── Line wells (single layer) ──
-if lm.any():
-    lw = subset[lm].drop(columns=["_rep", "_source"], errors="ignore").copy()
-
-    for c in lw.columns:
-        if c != "geometry" and lw[c].dtype == object:
-            lw[c] = lw[c].astype(str)
-
-    lj = lw.to_json()
-    tip_fields = [c for c in lw.columns if c != "geometry"]
-
     layer_group = folium.FeatureGroup(name=f"Wells ({layer_suffix})")
 
-    # Invisible fat hitbox for tooltip hover
-    folium.GeoJson(
-        lj,
-        style_function=lambda _, _col=color: {
-            "color": "transparent",
-            "weight": 14,
-            "opacity": 0,
-        },
-        highlight_function=lambda _, _col=color: {
-            "weight": 14,
-            "color": _col,
-            "opacity": 0.3,
-        },
-        tooltip=folium.GeoJsonTooltip(
-            fields=tip_fields,
-            aliases=[f"{c}:" for c in tip_fields],
-            localize=True,
-            sticky=True,
-            style=TIP,
-        ),
-    ).add_to(layer_group)
+    lm = subset.geometry.geom_type.isin(["LineString", "MultiLineString"])
 
-    # Visible thin line
-    folium.GeoJson(
-        lj,
-        style_function=lambda _, _col=color: {
-            "color": _col,
-            "weight": 0.5,
-            "opacity": 0.8,
-        },
-    ).add_to(layer_group)
+    # ── Line wells ──
+    if lm.any():
+        lw = subset[lm].drop(columns=["_rep", "_source"], errors="ignore").copy()
 
-    # Toe endpoints
-    eps = subset.loc[lm.values, "_rep"].dropna()
-    if not eps.empty:
+        for c in lw.columns:
+            if c != "geometry" and lw[c].dtype == object:
+                lw[c] = lw[c].astype(str)
+
+        lj = lw.to_json()
+        tip_fields = [c for c in lw.columns if c != "geometry"]
+
+        # Invisible fat hitbox for tooltip hover
         folium.GeoJson(
-            gpd.GeoDataFrame(geometry=list(eps), crs=CRS_M).to_json(),
-            marker=folium.CircleMarker(
-                radius=1,
-                color=color,
-                fill=True,
-                fill_color=color,
-                fill_opacity=0.8,
-                weight=1,
+            lj,
+            style_function=lambda _, _col=color: {
+                "color": "transparent",
+                "weight": 14,
+                "opacity": 0,
+            },
+            highlight_function=lambda _, _col=color: {
+                "weight": 14,
+                "color": _col,
+                "opacity": 0.3,
+            },
+            tooltip=folium.GeoJsonTooltip(
+                fields=tip_fields,
+                aliases=[f"{c}:" for c in tip_fields],
+                localize=True,
+                sticky=True,
+                style=TIP,
             ),
         ).add_to(layer_group)
 
+        # Visible thin line
+        folium.GeoJson(
+            lj,
+            style_function=lambda _, _col=color: {
+                "color": _col,
+                "weight": 0.5,
+                "opacity": 0.8,
+            },
+        ).add_to(layer_group)
+
+        # Toe endpoints
+        eps = subset.loc[lm.values, "_rep"].dropna()
+        if not eps.empty:
+            folium.GeoJson(
+                gpd.GeoDataFrame(geometry=list(eps), crs=CRS_M).to_json(),
+                marker=folium.CircleMarker(
+                    radius=1,
+                    color=color,
+                    fill=True,
+                    fill_color=color,
+                    fill_opacity=0.8,
+                    weight=1,
+                ),
+            ).add_to(layer_group)
+
+    # Add the whole group as ONE layer
     layer_group.add_to(m)
 
     # ── Point wells ──
