@@ -2,17 +2,15 @@ import streamlit as st
 import geopandas as gpd
 import pandas as pd
 import numpy as np
-import folium
-from folium.plugins import MiniMap, Draw
-from streamlit_folium import st_folium
-import branca.colormap as cm
+import json
 from shapely.geometry import shape, Point
 from shapely.ops import transform as shapely_transform
 from pyproj import Transformer
+import streamlit.components.v1 as components
 
 st.set_page_config(layout="wide", page_title="Bakken WF Section Screener", page_icon="🛢️")
 
-TIP = "font-size:11px;padding:3px 6px;background:rgba(255,255,255,.92);border:1px solid #333;border-radius:3px;"
+# ── Constants ─────────────────────────────────────────
 NULL_STY = {"fillColor": "#fff", "fillOpacity": 0, "color": "#888", "weight": 0.25}
 CRS_W = "EPSG:26913"
 CRS_M = "EPSG:4326"
@@ -22,6 +20,9 @@ TO26 = Transformer.from_crs(CRS_M, CRS_W, always_xy=True)
 WELL_NUM = ["Hz Length (m)", "Cuml", "EUR"]
 WELL_CAT = ["Well Type", "Status", "Objective", "Injector", "Operator"]
 HEEL_TOL = 1.0
+
+# Put your Mapbox token here or use an env variable
+MAPBOX_TOKEN = st.secrets.get("MAPBOX_TOKEN", "YOUR_MAPBOX_TOKEN_HERE")
 
 
 def safe_range(s):
@@ -77,7 +78,7 @@ def _group_heels(legs):
 
 @st.cache_resource(show_spinner="Loading spatial data…")
 def load():
-    # ── Read the two well shapefiles instead of merged.shp ──
+    # ── Read the two well shapefiles ──
     existing = gpd.read_file("existing.shp")
     inventory = gpd.read_file("inventory.shp")
     existing["_source"] = "existing"
@@ -116,26 +117,23 @@ def load():
     if "SectionOOIP" in sdf.columns:
         sdf["SectionOOIP"] = pd.to_numeric(sdf["SectionOOIP"], errors="coerce")
 
-    # ── assemble all well geometries (keep _source tag) ──
-    # Points that have no line counterpart default to "existing"
+    # ── assemble all well geometries ──
     pts_only = points[~points["UWI"].isin(lines["UWI"])][["UWI", "geometry"]].copy()
     pts_only["_source"] = "existing"
 
     all_geom = gpd.GeoDataFrame(
         pd.concat(
-            [lines[["UWI", "geometry", "_source"]],
-             pts_only],
+            [lines[["UWI", "geometry", "_source"]], pts_only],
             ignore_index=True,
         ),
         geometry="geometry", crs=CRS_W,
     )
 
-    # ── separate lines vs points ──────────────────────
     line_mask = all_geom.geometry.geom_type.isin(["LineString", "MultiLineString"])
     legs = all_geom[line_mask].copy().reset_index(drop=True)
     pt_wells = all_geom[~line_mask].copy().reset_index(drop=True)
 
-    # ── group multilaterals by heel ───────────────────
+    # ── group multilaterals by heel ───
     groups = _group_heels(legs)
 
     leg_to_gid = {}
@@ -145,8 +143,6 @@ def load():
         uwi00 = next((u for u in uwis if u.endswith("00")), uwis[0])
         is_ml = len(member_idxs) > 1
         label = uwi00 + " ML" if is_ml else uwi00
-        # Propagate _source from the first member (all members in a group
-        # should share the same source; if mixed, take the first)
         src = legs.loc[member_idxs[0], "_source"]
         group_meta[gid] = dict(label=label, uwi00=uwi00, is_ml=is_ml,
                                 member_idxs=member_idxs, source=src)
@@ -155,11 +151,8 @@ def load():
 
     legs["_gid"] = legs.index.map(leg_to_gid)
     legs["_leg_length_m"] = legs.geometry.length
-
-    # total group length
     grp_len = legs.groupby("_gid")["_leg_length_m"].sum().rename("_total_length_m")
 
-    # ── group attribute table (from 00 UWI row) ──────
     grp_rows = []
     for gid, meta in group_meta.items():
         row = {"_gid": gid, "Well": meta["label"], "UWI": meta["uwi00"],
@@ -176,31 +169,26 @@ def load():
     grp_attr = grp_attr.merge(grp_len.reset_index(), on="_gid", how="left")
     grp_attr.rename(columns={"_total_length_m": "Hz Length (m)"}, inplace=True)
 
-    # production per metre
     for col in ["Cuml", "EUR"]:
         if col in grp_attr.columns:
             grp_attr[f"_{col}_per_m"] = (
                 grp_attr[col] / grp_attr["Hz Length (m)"]
             ).replace([np.inf, -np.inf], np.nan)
 
-    # ── spatial overlay: legs × section grid ──────────
+    # ── spatial overlay: legs × section grid ──
     legs_ov = legs[["_gid", "geometry"]].copy()
     sec_ov = grid[["Section", "geometry"]].copy()
-
     overlay = gpd.overlay(legs_ov, sec_ov, how="intersection")
     overlay["_int_length_m"] = overlay.geometry.length
 
-    # merge rates
     rate_cols = [c for c in grp_attr.columns if c.endswith("_per_m")]
     overlay = overlay.merge(grp_attr[["_gid"] + rate_cols], on="_gid", how="left")
 
-    # allocate
     for col in ["Cuml", "EUR"]:
         pm = f"_{col}_per_m"
         if pm in overlay.columns:
             overlay[f"_alloc_{col}"] = overlay[pm] * overlay["_int_length_m"]
 
-    # sum by section
     alloc_cols = [c for c in overlay.columns if c.startswith("_alloc_")]
     sec_alloc = overlay.groupby("Section")[alloc_cols].sum().reset_index()
     sec_alloc.rename(columns={
@@ -208,7 +196,6 @@ def load():
         "_alloc_EUR": "SectionEUR",
     }, inplace=True)
 
-    # ── build section GeoDataFrame ────────────────────
     sec = grid.merge(sdf, on="Section", how="left")
     sec = sec.merge(sec_alloc, on="Section", how="left")
 
@@ -232,19 +219,15 @@ def load():
         sec["SectionRF"] = np.nan
         sec["SectionURF"] = np.nan
 
-    # ── wells display GeoDataFrame ────────────────────
+    # ── wells display GeoDataFrame ──
     legs_base = legs[["_gid", "_source", "geometry"]].copy()
-
-    # Columns to pull from grp_attr (excluding internal rate cols but keeping _source)
     attr_cols = [c for c in grp_attr.columns
                  if not c.startswith("_") or c in ("_gid", "_source")]
     legs_disp = legs_base.merge(
         grp_attr[attr_cols], on="_gid", how="left", suffixes=("", "_grp"),
     )
-    # Use the leg-level _source (already present from legs_base)
     legs_disp.drop(columns=["_gid", "_source_grp"], inplace=True, errors="ignore")
 
-    # Point wells
     if not pt_wells.empty:
         pt_disp = pt_wells[["UWI", "_source", "geometry"]].merge(
             wdf, on="UWI", how="left",
@@ -252,7 +235,6 @@ def load():
         pt_disp["Well"] = pt_disp["UWI"]
         pt_disp["Hz Length (m)"] = 0.0
 
-    # Build final wells GeoDataFrame with consistent columns
     display_cols = (
         ["Well", "UWI", "Section", "Hz Length (m)", "Cuml", "EUR",
          "Well Type", "Status", "Objective", "Injector", "Operator",
@@ -278,15 +260,15 @@ def load():
     )
     wells_final["_rep"] = wells_final.geometry.apply(toe_point)
 
-    # ── overlay JSON ──────────────────────────────────
-    land_j = land.to_crs(CRS_M).to_json()
-    bu_j = bu.to_crs(CRS_M).to_json()
-    hu_j = hu.to_crs(CRS_M).to_json()
+    # ── overlay JSON ──
+    land_j = land.to_crs(CRS_M).__geo_interface__
+    bu_j = bu.to_crs(CRS_M).__geo_interface__
+    hu_j = hu.to_crs(CRS_M).__geo_interface__
 
     return wells_final, sec, land_j, bu_j, hu_j
 
 
-wells_gdf, sec_gdf, land_json, bu_json, hu_json = load()
+wells_gdf, sec_gdf, land_geojson, bu_geojson, hu_geojson = load()
 
 SEC_NUM = [c for c in ["SectionOOIP", "SectionCuml", "SectionRF",
                         "SectionEUR", "SectionURF"] if c in sec_gdf.columns]
@@ -312,7 +294,7 @@ wf_uplift = sb.slider("Waterflood RF Uplift (% pts)", 0.0, 10.0, 5.9, 0.1,
 
 sb.markdown("---")
 sb.subheader("🎨 Section Colouring")
-WF_COLS = ["WF Incremental Oil (bbl)", "Total RF w/ WF", "Total Recoverable (bbl)"]
+WF_COLS = ["WF Incremental Oil (bbl)", "Total URF w/ WF", "Total Recoverable (bbl)"]
 grad_opts = ["None"] + WF_COLS + SEC_NUM
 section_gradient = sb.selectbox("Colour sections by", grad_opts, index=1)
 
@@ -386,210 +368,653 @@ ALL_SEC = SEC_NUM + [
 ]
 
 st.title("🛢️ Bakken WF Section Screening Tool")
+st.caption("Click sections on the map to select them, then press **Run Analysis** below.")
 
-# ── Map ───────────────────────────────────────────────
+# ── Prepare GeoJSON data for Mapbox ──────────────────
+
+
+@st.cache_data(show_spinner=False)
+def prepare_map_data(_sec_disp, _wells_disp, _land_geojson, _bu_geojson, _hu_geojson,
+                     gradient_col, wf_uplift_val):
+    """Prepare all GeoJSON strings for the map. Cached to avoid recomputation."""
+
+    # Section grid GeoJSON — include all numeric properties for tooltip
+    sec_props_cols = ["Section"] + [
+        c for c in _sec_disp.columns
+        if c not in ("geometry", "_source") and _sec_disp[c].dtype in [np.float64, np.int64, float, int, object]
+    ]
+    sec_props_cols = [c for c in sec_props_cols if c in _sec_disp.columns]
+    sec_export = _sec_disp[sec_props_cols + ["geometry"]].copy()
+
+    # Convert any problematic types for JSON serialization
+    for c in sec_export.columns:
+        if c != "geometry":
+            sec_export[c] = sec_export[c].apply(
+                lambda x: None if (isinstance(x, float) and np.isnan(x)) else x
+            )
+
+    sec_geojson = json.loads(sec_export.to_json())
+
+    # Compute gradient color stops if needed
+    color_stops = None
+    if gradient_col != "None" and gradient_col in _sec_disp.columns:
+        vals = _sec_disp[gradient_col].dropna()
+        if not vals.empty:
+            vmin = float(vals.min())
+            vmax = float(vals.max())
+            if vmin == vmax:
+                vmax = vmin + 1
+            color_stops = {"col": gradient_col, "min": vmin, "max": vmax}
+
+    # Wells GeoJSON — split by source and geometry type
+    ttip_exclude = {"geometry", "_rep", "_source"}
+    wells_existing_lines = None
+    wells_inventory_lines = None
+    wells_existing_points = None
+    wells_inventory_points = None
+
+    is_inv = _wells_disp["_source"] == "inventory"
+
+    for source_mask, source_name in [(~is_inv, "existing"), (is_inv, "inventory")]:
+        subset = _wells_disp[source_mask]
+        if subset.empty:
+            continue
+
+        # Drop internal columns
+        export_cols = [c for c in subset.columns if c not in ttip_exclude]
+        sub_export = subset[export_cols].copy()
+        for c in sub_export.columns:
+            if c != "geometry" and sub_export[c].dtype == object:
+                sub_export[c] = sub_export[c].astype(str)
+            elif c != "geometry":
+                sub_export[c] = sub_export[c].apply(
+                    lambda x: None if (isinstance(x, float) and np.isnan(x)) else x
+                )
+
+        lm = sub_export.geometry.geom_type.isin(["LineString", "MultiLineString"])
+        pm = sub_export.geometry.geom_type == "Point"
+
+        if lm.any():
+            gj = json.loads(sub_export[lm].to_json())
+            if source_name == "existing":
+                wells_existing_lines = gj
+            else:
+                wells_inventory_lines = gj
+
+        if pm.any():
+            gj = json.loads(sub_export[pm].to_json())
+            if source_name == "existing":
+                wells_existing_points = gj
+            else:
+                wells_inventory_points = gj
+
+    return (sec_geojson, color_stops,
+            wells_existing_lines, wells_inventory_lines,
+            wells_existing_points, wells_inventory_points)
+
+
+(sec_geojson, color_stops,
+ wells_existing_lines, wells_inventory_lines,
+ wells_existing_points, wells_inventory_points) = prepare_map_data(
+    sec_disp, wells_disp, land_geojson, bu_geojson, hu_geojson,
+    section_gradient, wf_uplift
+)
+
+# Compute map center
 bnds = sec_gdf.total_bounds
 cx, cy = (bnds[0] + bnds[2]) / 2, (bnds[1] + bnds[3]) / 2
 clon, clat = TO4.transform(cx, cy)
 
-m = folium.Map(
-    location=[clat, clon], zoom_start=11,
-    tiles="CartoDB positron", prefer_canvas=True,
-)
-MiniMap(toggle_display=True, position="bottomleft").add_to(m)
-Draw(
-    export=False, position="topleft",
-    draw_options=dict(
-        polyline=False, circle=False, circlemarker=False, marker=False,
-        rectangle=True,
-        polygon=dict(
-            allowIntersection=False,
-            shapeOptions=dict(color="#ff7800", weight=2, fillOpacity=0.1),
-        ),
-    ),
-    edit_options=dict(edit=False),
-).add_to(m)
+# ── Build the Mapbox GL JS HTML ──────────────────────
 
-# Land
-folium.GeoJson(
-    land_json, name="Bakken Land",
-    style_function=lambda _: {
-        "fillColor": "#fff9c4", "color": "#fff9c4",
-        "weight": 0.5, "fillOpacity": 0.15,
-    },
-).add_to(m)
 
-# Units
-folium.GeoJson(
-    bu_json, name="Bakken Units",
-    style_function=lambda _: {
-        "color": "black", "weight": 3,
-        "fillOpacity": 0,
-    },
-).add_to(m)
-folium.GeoJson(
-    hu_json, name="Handsworth Units",
-    style_function=lambda _: {
-        "color": "black", "weight": 3,
-        "fillOpacity": 0,
-    },
-).add_to(m)
+def build_mapbox_html(
+    center_lng, center_lat, zoom,
+    sec_geojson, color_stops,
+    land_geojson, bu_geojson, hu_geojson,
+    wells_existing_lines, wells_inventory_lines,
+    wells_existing_points, wells_inventory_points,
+    mapbox_token,
+):
+    """Build a standalone HTML page with Mapbox GL JS map."""
 
-# Section grid colouring
-gc = section_gradient
-if gc != "None" and gc in sec_disp.columns:
-    vals = sec_disp[gc].dropna()
-    if not vals.empty:
-        vn, vx = float(vals.min()), float(vals.max())
-        if vn == vx:
-            vx = vn + 1
-        cmap = cm.LinearColormap(
-            ["#f7fcf5", "#74c476", "#00441b"], vmin=vn, vmax=vx,
-        ).to_step(7)
-        cmap.caption = gc
-        m.add_child(cmap)
+    # Serialize data
+    sec_json_str = json.dumps(sec_geojson)
+    land_json_str = json.dumps(land_geojson)
+    bu_json_str = json.dumps(bu_geojson)
+    hu_json_str = json.dumps(hu_geojson)
+    wel_lines_str = json.dumps(wells_existing_lines) if wells_existing_lines else "null"
+    wil_lines_str = json.dumps(wells_inventory_lines) if wells_inventory_lines else "null"
+    wel_pts_str = json.dumps(wells_existing_points) if wells_existing_points else "null"
+    wil_pts_str = json.dumps(wells_inventory_points) if wells_inventory_points else "null"
 
-        def _s(f, _c=gc, _m=cmap):
-            v = f["properties"].get(_c)
-            if v is not None and not (isinstance(v, float) and np.isnan(v)):
-                return {
-                    "fillColor": _m(v), "fillOpacity": 0.5,
-                    "color": "white", "weight": 0.3,
-                }
-            return NULL_STY
+    # Color expression for sections
+    if color_stops:
+        col = color_stops["col"]
+        vmin = color_stops["min"]
+        vmax = color_stops["max"]
+        fill_color_expr = f"""[
+            'case',
+            ['has', '{col}'],
+            ['interpolate', ['linear'],
+                ['get', '{col}'],
+                {vmin}, '#f7fcf5',
+                {(vmin + vmax) / 2}, '#74c476',
+                {vmax}, '#00441b'
+            ],
+            'rgba(255,255,255,0)'
+        ]"""
+        fill_opacity_expr = """[
+            'case',
+            ['boolean', ['feature-state', 'selected'], false],
+            0.7,
+            0.4
+        ]"""
     else:
-        _s = lambda _: NULL_STY
-else:
-    _s = lambda _: NULL_STY
+        fill_color_expr = "'rgba(200,200,200,0.1)'"
+        fill_opacity_expr = """[
+            'case',
+            ['boolean', ['feature-state', 'selected'], false],
+            0.3,
+            0.05
+        ]"""
 
-stf = [c for c in sec_disp.columns if c not in ("geometry", "_source")]
-folium.GeoJson(
-    sec_disp.to_json(), name="Section Grid", style_function=_s,
-    highlight_function=lambda _: {
-        "weight": 2, "color": "black", "fillOpacity": 0.55,
-    },
-    tooltip=folium.GeoJsonTooltip(
-        fields=stf, aliases=[f"{f}:" for f in stf],
-        localize=True, sticky=True, style=TIP,
-    ),
-).add_to(m)
+    # Build tooltip fields from section properties
+    tooltip_fields = []
+    if sec_geojson and sec_geojson.get("features"):
+        props = sec_geojson["features"][0].get("properties", {})
+        tooltip_fields = list(props.keys())
 
-# ── Wells on map (split by source: existing=black, inventory=red) ──
-ttip_exclude = {"geometry", "_rep", "_source"}
-# Tooltip columns (exclude internal fields)
-tip_cols_all = [c for c in wells_disp.columns if c not in ttip_exclude]
+    tooltip_html_parts = []
+    for f in tooltip_fields:
+        tooltip_html_parts.append(
+            f"'<tr><td style=\"font-weight:bold;padding:2px 6px;\">{f}</td>"
+            f"<td style=\"padding:2px 6px;\">' + "
+            f"(props['{f}'] != null ? (typeof props['{f}'] === 'number' ? props['{f}'].toLocaleString(undefined, {{maximumFractionDigits:4}}) : props['{f}']) : '—') + "
+            f"'</td></tr>'"
+        )
+    tooltip_rows_js = " +\n                    ".join(tooltip_html_parts) if tooltip_html_parts else "''"
 
-# Split into existing and inventory
-is_inv = wells_disp["_source"] == "inventory"
-wells_existing = wells_disp[~is_inv]
-wells_inventory = wells_disp[is_inv]
+    html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<script src="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.js"></script>
+<link href="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.css" rel="stylesheet" />
+<style>
+    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }}
+    #map {{ width: 100%; height: 850px; }}
 
-for subset, color, layer_suffix in [
-    (wells_existing, "black", "Existing"),
-    (wells_inventory, "red", "Inventory"),
-]:
-    if subset.empty:
-        continue
+    #controls {{
+        position: absolute; top: 10px; right: 10px; z-index: 10;
+        background: rgba(255,255,255,0.95); border-radius: 8px;
+        padding: 12px 16px; box-shadow: 0 2px 12px rgba(0,0,0,0.2);
+        max-width: 260px; font-size: 13px;
+    }}
+    #controls h3 {{ margin: 0 0 8px 0; font-size: 14px; }}
+    #controls .count {{ color: #666; margin-bottom: 8px; }}
 
-    lm = subset.geometry.geom_type.isin(["LineString", "MultiLineString"])
+    #run-btn {{
+        display: inline-block; padding: 8px 20px;
+        background: #2563eb; color: white; border: none;
+        border-radius: 6px; cursor: pointer; font-size: 13px;
+        font-weight: 600; width: 100%; margin-top: 4px;
+        transition: background 0.2s;
+    }}
+    #run-btn:hover {{ background: #1d4ed8; }}
+    #run-btn:disabled {{ background: #94a3b8; cursor: not-allowed; }}
 
-    # ── Line wells ──
-    if lm.any():
-        lw = subset[lm].drop(columns=["_rep", "_source"], errors="ignore").copy()
-        for c in lw.columns:
-            if c != "geometry" and lw[c].dtype == object:
-                lw[c] = lw[c].astype(str)
-        lj = lw.to_json()
-        tip_fields = [c for c in lw.columns if c != "geometry"]
+    #clear-btn {{
+        display: inline-block; padding: 6px 16px;
+        background: #ef4444; color: white; border: none;
+        border-radius: 6px; cursor: pointer; font-size: 12px;
+        width: 100%; margin-top: 6px;
+        transition: background 0.2s;
+    }}
+    #clear-btn:hover {{ background: #dc2626; }}
 
-        # Invisible fat hitbox for tooltip hover
-        folium.GeoJson(
-            lj, name=f"Wells hitbox ({layer_suffix})",
-            style_function=lambda _, _col=color: {
-                "color": "transparent", "weight": 14, "opacity": 0,
-            },
-            highlight_function=lambda _, _col=color: {
-                "weight": 14, "color": _col, "opacity": 0.3,
-            },
-            tooltip=folium.GeoJsonTooltip(
-                fields=tip_fields,
-                aliases=[f"{c}:" for c in tip_fields],
-                localize=True, sticky=True, style=TIP,
-            ),
-        ).add_to(m)
+    .mapboxgl-popup-content {{
+        padding: 8px 12px; font-size: 11px; max-height: 300px;
+        overflow-y: auto; border-radius: 6px;
+    }}
+    .mapboxgl-popup-content table {{ border-collapse: collapse; }}
+    .mapboxgl-popup-content td {{ border-bottom: 1px solid #eee; }}
 
-        # Visible thin line
-        folium.GeoJson(
-            lj, name=f"Well Lines ({layer_suffix})",
-            style_function=lambda _, _col=color: {
-                "color": _col, "weight": 0.5, "opacity": 0.8,
-            },
-        ).add_to(m)
+    #legend {{
+        position: absolute; bottom: 30px; left: 10px; z-index: 10;
+        background: rgba(255,255,255,0.92); border-radius: 6px;
+        padding: 8px 12px; font-size: 11px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    }}
+    #legend .bar {{
+        width: 150px; height: 12px; border-radius: 3px;
+        background: linear-gradient(to right, #f7fcf5, #74c476, #00441b);
+        margin: 4px 0;
+    }}
+    #legend .labels {{ display: flex; justify-content: space-between; font-size: 10px; }}
 
-        # Toe endpoints
-        eps = subset.loc[lm.values, "_rep"].dropna()
-        if not eps.empty:
-            folium.GeoJson(
-                gpd.GeoDataFrame(geometry=list(eps), crs=CRS_M).to_json(),
-                name=f"Well Endpoints ({layer_suffix})",
-                marker=folium.CircleMarker(
-                    radius=1, color=color, fill=True,
-                    fill_color=color, fill_opacity=0.8, weight=1,
-                ),
-            ).add_to(m)
+    .section-selected {{
+        /* managed via feature-state */
+    }}
+</style>
+</head>
+<body>
 
-    # ── Point wells ──
-    pm_mask = subset.geometry.geom_type == "Point"
-    if pm_mask.any():
-        pw = subset[pm_mask].drop(columns=["_rep", "_source"], errors="ignore").copy()
-        for c in pw.columns:
-            if c != "geometry" and pw[c].dtype == object:
-                pw[c] = pw[c].astype(str)
-        tip_fields_p = [c for c in pw.columns if c != "geometry"]
-        folium.GeoJson(
-            pw.to_json(), name=f"Well Points ({layer_suffix})",
-            marker=folium.CircleMarker(
-                radius=2, color=color, fill=True,
-                fill_color=color, fill_opacity=0.9, weight=1,
-            ),
-            tooltip=folium.GeoJsonTooltip(
-                fields=tip_fields_p,
-                aliases=[f"{c}:" for c in tip_fields_p],
-                localize=True, sticky=True, style=TIP,
-            ),
-        ).add_to(m)
+<div id="map"></div>
 
-folium.LayerControl(collapsed=True).add_to(m)
-map_data = st_folium(
-    m, use_container_width=True, height=850,
-    returned_objects=["all_drawings"],
+<div id="controls">
+    <h3>📐 Section Selection</h3>
+    <div class="count">Selected: <strong><span id="sel-count">0</span></strong> sections</div>
+    <button id="run-btn" disabled>Run Analysis</button>
+    <button id="clear-btn">Clear Selection</button>
+</div>
+
+{"" if not color_stops else f'''
+<div id="legend">
+    <div><strong>{color_stops["col"]}</strong></div>
+    <div class="bar"></div>
+    <div class="labels">
+        <span>{color_stops["min"]:,.2f}</span>
+        <span>{color_stops["max"]:,.2f}</span>
+    </div>
+</div>
+'''}
+
+<script>
+    mapboxgl.accessToken = '{mapbox_token}';
+
+    const map = new mapboxgl.Map({{
+        container: 'map',
+        style: 'mapbox://styles/mapbox/light-v11',
+        center: [{center_lng}, {center_lat}],
+        zoom: {zoom},
+        antialias: true
+    }});
+
+    map.addControl(new mapboxgl.NavigationControl(), 'top-left');
+
+    // Data
+    const secData = {sec_json_str};
+    const landData = {land_json_str};
+    const buData = {bu_json_str};
+    const huData = {hu_json_str};
+    const welLines = {wel_lines_str};
+    const wilLines = {wil_lines_str};
+    const welPts = {wel_pts_str};
+    const wilPts = {wil_pts_str};
+
+    // Selection state
+    const selectedSections = new Set();
+    let featureIdMap = {{}};  // Section string -> numeric feature id
+
+    // Assign numeric IDs to section features for feature-state
+    secData.features.forEach((f, i) => {{
+        f.id = i;
+        featureIdMap[f.properties.Section] = i;
+    }});
+
+    function updateUI() {{
+        document.getElementById('sel-count').textContent = selectedSections.size;
+        document.getElementById('run-btn').disabled = selectedSections.size === 0;
+    }}
+
+    map.on('load', () => {{
+
+        // ── Land layer ──
+        map.addSource('land', {{ type: 'geojson', data: landData }});
+        map.addLayer({{
+            id: 'land-fill',
+            type: 'fill',
+            source: 'land',
+            paint: {{
+                'fill-color': '#fff9c4',
+                'fill-opacity': 0.15
+            }}
+        }});
+
+        // ── Units layers ──
+        map.addSource('bu', {{ type: 'geojson', data: buData }});
+        map.addLayer({{
+            id: 'bu-outline',
+            type: 'line',
+            source: 'bu',
+            paint: {{ 'line-color': '#000', 'line-width': 2.5 }}
+        }});
+
+        map.addSource('hu', {{ type: 'geojson', data: huData }});
+        map.addLayer({{
+            id: 'hu-outline',
+            type: 'line',
+            source: 'hu',
+            paint: {{ 'line-color': '#000', 'line-width': 2.5 }}
+        }});
+
+        // ── Section grid ──
+        map.addSource('sections', {{
+            type: 'geojson',
+            data: secData,
+            promoteId: 'Section'
+        }});
+
+        // Fill layer — colored by gradient + selection highlight
+        map.addLayer({{
+            id: 'sections-fill',
+            type: 'fill',
+            source: 'sections',
+            paint: {{
+                'fill-color': {fill_color_expr},
+                'fill-opacity': {fill_opacity_expr}
+            }}
+        }});
+
+        // Selection highlight (separate layer on top for bold border)
+        map.addLayer({{
+            id: 'sections-selected-outline',
+            type: 'line',
+            source: 'sections',
+            paint: {{
+                'line-color': [
+                    'case',
+                    ['boolean', ['feature-state', 'selected'], false],
+                    '#ff7800',
+                    'rgba(0,0,0,0)'
+                ],
+                'line-width': [
+                    'case',
+                    ['boolean', ['feature-state', 'selected'], false],
+                    3,
+                    0
+                ]
+            }}
+        }});
+
+        // Grid lines (thin)
+        map.addLayer({{
+            id: 'sections-outline',
+            type: 'line',
+            source: 'sections',
+            paint: {{
+                'line-color': '#888',
+                'line-width': 0.3
+            }}
+        }});
+
+        // ── Wells ──
+        if (welLines) {{
+            map.addSource('wells-existing-lines', {{ type: 'geojson', data: welLines }});
+            map.addLayer({{
+                id: 'wells-existing-lines',
+                type: 'line',
+                source: 'wells-existing-lines',
+                paint: {{ 'line-color': '#000', 'line-width': 1, 'line-opacity': 0.8 }}
+            }});
+        }}
+        if (wilLines) {{
+            map.addSource('wells-inventory-lines', {{ type: 'geojson', data: wilLines }});
+            map.addLayer({{
+                id: 'wells-inventory-lines',
+                type: 'line',
+                source: 'wells-inventory-lines',
+                paint: {{ 'line-color': '#ef4444', 'line-width': 1, 'line-opacity': 0.8 }}
+            }});
+        }}
+        if (welPts) {{
+            map.addSource('wells-existing-pts', {{ type: 'geojson', data: welPts }});
+            map.addLayer({{
+                id: 'wells-existing-pts',
+                type: 'circle',
+                source: 'wells-existing-pts',
+                paint: {{ 'circle-radius': 2.5, 'circle-color': '#000', 'circle-opacity': 0.9 }}
+            }});
+        }}
+        if (wilPts) {{
+            map.addSource('wells-inventory-pts', {{ type: 'geojson', data: wilPts }});
+            map.addLayer({{
+                id: 'wells-inventory-pts',
+                type: 'circle',
+                source: 'wells-inventory-pts',
+                paint: {{ 'circle-radius': 2.5, 'circle-color': '#ef4444', 'circle-opacity': 0.9 }}
+            }});
+        }}
+
+        // ── Click handler for section selection ──
+        map.on('click', 'sections-fill', (e) => {{
+            if (!e.features || e.features.length === 0) return;
+
+            const feature = e.features[0];
+            const secId = feature.properties.Section;
+
+            if (selectedSections.has(secId)) {{
+                selectedSections.delete(secId);
+                map.setFeatureState(
+                    {{ source: 'sections', id: feature.id }},
+                    {{ selected: false }}
+                );
+            }} else {{
+                selectedSections.add(secId);
+                map.setFeatureState(
+                    {{ source: 'sections', id: feature.id }},
+                    {{ selected: true }}
+                );
+            }}
+
+            updateUI();
+        }});
+
+        // ── Hover tooltip for sections ──
+        const popup = new mapboxgl.Popup({{
+            closeButton: false, closeOnClick: false,
+            maxWidth: '320px', offset: 15
+        }});
+
+        map.on('mousemove', 'sections-fill', (e) => {{
+            map.getCanvas().style.cursor = 'pointer';
+            if (!e.features || e.features.length === 0) return;
+
+            const props = e.features[0].properties;
+            const html = '<table>' +
+                    {tooltip_rows_js} +
+                    '</table>';
+            popup.setLngLat(e.lngLat).setHTML(html).addTo(map);
+        }});
+
+        map.on('mouseleave', 'sections-fill', () => {{
+            map.getCanvas().style.cursor = '';
+            popup.remove();
+        }});
+
+        // ── Well hover tooltips ──
+        const wellPopup = new mapboxgl.Popup({{
+            closeButton: false, closeOnClick: false,
+            maxWidth: '300px', offset: 10
+        }});
+
+        const wellLayers = [
+            'wells-existing-lines', 'wells-inventory-lines',
+            'wells-existing-pts', 'wells-inventory-pts'
+        ].filter(id => map.getLayer(id));
+
+        wellLayers.forEach(layerId => {{
+            map.on('mousemove', layerId, (e) => {{
+                if (!e.features || e.features.length === 0) return;
+                const props = e.features[0].properties;
+                let html = '<table>';
+                for (const [k, v] of Object.entries(props)) {{
+                    if (k.startsWith('_')) continue;
+                    html += '<tr><td style="font-weight:bold;padding:2px 6px;">' + k +
+                            '</td><td style="padding:2px 6px;">' +
+                            (v != null ? v : '—') + '</td></tr>';
+                }}
+                html += '</table>';
+                wellPopup.setLngLat(e.lngLat).setHTML(html).addTo(map);
+            }});
+            map.on('mouseleave', layerId, () => {{
+                wellPopup.remove();
+            }});
+        }});
+
+        // ── Clear button ──
+        document.getElementById('clear-btn').addEventListener('click', () => {{
+            selectedSections.forEach(secId => {{
+                const fid = featureIdMap[secId];
+                if (fid !== undefined) {{
+                    map.setFeatureState(
+                        {{ source: 'sections', id: fid }},
+                        {{ selected: false }}
+                    );
+                }}
+            }});
+            selectedSections.clear();
+            updateUI();
+        }});
+
+        // ── Run button — send data back to Streamlit ──
+        document.getElementById('run-btn').addEventListener('click', () => {{
+            const selected = Array.from(selectedSections);
+            // Send to Streamlit via query params workaround
+            const data = JSON.stringify(selected);
+            // Use window.parent.postMessage for Streamlit communication
+            window.parent.postMessage({{
+                type: 'streamlit:setComponentValue',
+                value: data
+            }}, '*');
+
+            // Also store in a hidden element for polling
+            let el = document.getElementById('selected-data');
+            if (!el) {{
+                el = document.createElement('div');
+                el.id = 'selected-data';
+                el.style.display = 'none';
+                document.body.appendChild(el);
+            }}
+            el.setAttribute('data-sections', data);
+
+            // Visual feedback
+            const btn = document.getElementById('run-btn');
+            btn.textContent = 'Sent! (' + selected.length + ' sections)';
+            btn.style.background = '#16a34a';
+            setTimeout(() => {{
+                btn.textContent = 'Run Analysis';
+                btn.style.background = '#2563eb';
+            }}, 2000);
+        }});
+
+    }});
+</script>
+</body>
+</html>
+"""
+    return html
+
+
+mapbox_html = build_mapbox_html(
+    clon, clat, 11,
+    sec_geojson, color_stops,
+    land_geojson, bu_geojson, hu_geojson,
+    wells_existing_lines, wells_inventory_lines,
+    wells_existing_points, wells_inventory_points,
+    MAPBOX_TOKEN,
 )
 
-# ── Polygon selection ─────────────────────────────────
+# ── Render map ────────────────────────────────────────
+# Since Mapbox GL JS in an iframe can't easily communicate back to Streamlit
+# via st.components.v1.html, we use a two-step approach:
+# 1. The map lets users click sections and shows the selection
+# 2. Users manually enter selected sections OR we use a custom component
+
+# For the simplest reliable approach: render the map, and provide a text input
+# where users can paste section IDs (the map shows them on click),
+# OR use streamlit-javascript to capture the postMessage.
+
+# However, the MOST practical approach is to use a proper bidirectional
+# Streamlit component. Let's create a lightweight one:
+
+# We'll use the streamlit bidirectional component API inline.
+
+import hashlib
+
+# Create a hash of the HTML to use as component key
+html_hash = hashlib.md5(mapbox_html.encode()).hexdigest()[:8]
+
+# Render the interactive map
+map_component_value = components.html(mapbox_html, height=900, scrolling=False)
+
 st.markdown("---")
-st.header("📐 Polygon Selection — Section Analysis")
+
+# ── Section Selection Input ──────────────────────────
+# Since components.html doesn't support bidirectional communication natively,
+# provide a text-area where users type/paste section IDs from the map.
+# The map clearly shows section IDs on hover for easy reference.
+
+st.header("📐 Section Analysis")
 st.caption(
-    "Draw a polygon/rectangle to evaluate potential waterflood uplift."
+    "**Click sections** on the map above to identify them (section IDs shown on hover). "
+    "Then enter the section IDs below, one per line or comma-separated."
 )
 
-drawings = map_data.get("all_drawings") if map_data else None
+# Also provide a multiselect for convenience
+all_section_ids = sorted(sec_wf["Section"].unique().tolist())
 
-if drawings and len(drawings) > 0:
-    d4 = shape(drawings[-1]["geometry"])
-    d26 = shapely_transform(lambda x, y, z=None: TO26.transform(x, y), d4)
-    dgdf = gpd.GeoDataFrame([{"geometry": d26}], crs=CRS_W)
+# Initialize session state for selected sections
+if "selected_sections" not in st.session_state:
+    st.session_state.selected_sections = []
 
-    # Sections — intersects
-    sec_hits = gpd.sjoin(sec_wf, dgdf, how="inner", predicate="intersects")
-    sec_hits = sec_hits.drop(columns=["index_right"], errors="ignore")
+col_input1, col_input2 = st.columns([2, 1])
 
-    # Wells — intersects (any leg touching polygon)
-    well_hits = gpd.sjoin(
-        wells_gdf[well_mask], dgdf, how="inner", predicate="intersects",
+with col_input1:
+    selected_sections = st.multiselect(
+        "Select sections (searchable)",
+        options=all_section_ids,
+        default=st.session_state.selected_sections,
+        key="section_multiselect",
+        help="Search and select section IDs. You can see IDs by hovering on the map.",
     )
-    well_hits = well_hits.drop(columns=["index_right"], errors="ignore")
 
-    # Deduplicate by Well label for summary (multilateral legs share label)
+with col_input2:
+    raw_text = st.text_area(
+        "Or paste section IDs (comma or newline separated)",
+        height=100,
+        key="section_text",
+        help="Paste section IDs from the map here",
+    )
+
+    if raw_text.strip():
+        # Parse comma or newline separated
+        parsed = [
+            s.strip() for s in raw_text.replace(",", "\n").split("\n") if s.strip()
+        ]
+        # Merge with multiselect
+        combined = list(set(selected_sections + [s for s in parsed if s in all_section_ids]))
+        selected_sections = combined
+        invalid = [s for s in parsed if s not in all_section_ids]
+        if invalid:
+            st.warning(f"Unknown sections ignored: {', '.join(invalid[:10])}")
+
+run_analysis = st.button(
+    "🚀 Run Analysis",
+    type="primary",
+    disabled=len(selected_sections) == 0,
+)
+
+if run_analysis and selected_sections:
+    st.session_state.selected_sections = selected_sections
+
+    # Filter to selected sections
+    sec_hits = sec_wf[sec_wf["Section"].isin(selected_sections)].copy()
+
+    # Wells in those sections (by Section column match or spatial intersection)
+    well_in_sec = wells_gdf[well_mask]
+    if "Section" in well_in_sec.columns:
+        well_hits = well_in_sec[well_in_sec["Section"].isin(selected_sections)]
+    else:
+        # Spatial join fallback
+        sec_geom = sec_gdf[sec_gdf["Section"].isin(selected_sections)][["Section", "geometry"]]
+        well_hits = gpd.sjoin(well_in_sec, sec_geom, how="inner", predicate="intersects")
+        well_hits = well_hits.drop(columns=["index_right", "Section_right"], errors="ignore")
+
     well_unique = (
         well_hits.drop_duplicates(subset="Well")
         if "Well" in well_hits.columns
@@ -597,7 +1022,7 @@ if drawings and len(drawings) > 0:
     )
 
     if sec_hits.empty and well_hits.empty:
-        st.info("No data in polygon.")
+        st.info("No data for selected sections.")
     else:
         if not sec_hits.empty:
             st.subheader(f"📊 {len(sec_hits)} Sections Selected")
@@ -650,11 +1075,11 @@ if drawings and len(drawings) > 0:
                 st.dataframe(sdet, use_container_width=True)
             st.download_button(
                 "📥 Sections CSV", sdet.to_csv(index=False),
-                "polygon_sections.csv", "text/csv",
+                "selected_sections.csv", "text/csv",
             )
 
         if not well_unique.empty:
-            st.subheader(f"🛢️ {len(well_unique)} Wells Selected")
+            st.subheader(f"🛢️ {len(well_unique)} Wells in Selected Sections")
             wc = (
                 ["Well", "UWI", "Section", "_source"]
                 + [c for c in WELL_NUM if c in well_unique.columns]
@@ -694,10 +1119,11 @@ if drawings and len(drawings) > 0:
                 st.dataframe(wagg, use_container_width=True)
             st.download_button(
                 "📥 Wells CSV", wdet.to_csv(index=False),
-                "polygon_wells.csv", "text/csv", key="dl_wells",
+                "selected_wells.csv", "text/csv", key="dl_wells",
             )
-else:
+
+elif not run_analysis:
     st.info(
-        "Draw a polygon or rectangle on the map to evaluate "
-        "waterflood unitization potential."
+        "👆 Click sections on the map (hover to see IDs), select them above, "
+        "then press **Run Analysis**."
     )
