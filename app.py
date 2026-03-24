@@ -72,7 +72,7 @@ OVERLAY_LAYERS = [
         "name": "Bakken Sw Line",
         "file": "Bakken Sw Line_plyln.shp",
         "style": {
-            "color": "#blue",
+            "color": "#0000ff",
             "weight": 2,
             "fillOpacity": 0,
         },
@@ -83,7 +83,7 @@ OVERLAY_LAYERS = [
         "name": "T1 Boundary",
         "file": "T1.shp",
         "style": {
-            "color": "#green",
+            "color": "#228b22",
             "weight": 1.5,
             "fillOpacity": 0,
             "dashArray": "6 4",
@@ -95,7 +95,7 @@ OVERLAY_LAYERS = [
         "name": "T2 Boundary",
         "file": "T2.shp",
         "style": {
-            "color": "red",
+            "color": "ff0000",
             "weight": 1.5,
             "fillOpacity": 0,
             "dashArray": "6 4",
