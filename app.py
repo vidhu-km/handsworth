@@ -24,19 +24,9 @@ WELL_CAT = ["Well Type", "Status", "Objective", "Injector", "Operator"]
 HEEL_TOL = 1.0
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# LAYER REGISTRY — add / remove / reorder / edit layers here.
-#
-# Each entry is a dict with these keys:
-#   "name"      : layer name in the layer control
-#   "file"      : shapefile path
-#   "style"     : dict passed to style_function (static style)
-#   "simplify"  : optional tolerance (metres) to simplify geometries
-#   "tooltip"   : True to add a tooltip with all attribute fields (default False)
-#
-# Layers render in the order listed (first = bottom).
+# LAYER REGISTRY
 # ═══════════════════════════════════════════════════════════════════════════════
 OVERLAY_LAYERS = [
-    # ── 1. Bakken Land ────────────────────────────────────────────────────────
     {
         "name": "Bakken Land",
         "file": "Bakken Land.shp",
@@ -47,7 +37,6 @@ OVERLAY_LAYERS = [
             "fillOpacity": 0.15,
         },
     },
-    # ── 2. Bakken Units ──────────────────────────────────────────────────────
     {
         "name": "Bakken Units",
         "file": "Bakken Units.shp",
@@ -57,7 +46,6 @@ OVERLAY_LAYERS = [
             "fillOpacity": 0,
         },
     },
-    # ── 3. Handsworth Units ──────────────────────────────────────────────────
     {
         "name": "Handsworth Units",
         "file": "Handsworth Units.shp",
@@ -67,7 +55,6 @@ OVERLAY_LAYERS = [
             "fillOpacity": 0,
         },
     },
-    # ── 4. Bakken Sw Line ────────────────────────────────────────────────────
     {
         "name": "Bakken Sw Line",
         "file": "Bakken Sw Line_plyln.shp",
@@ -78,7 +65,6 @@ OVERLAY_LAYERS = [
         },
         "tooltip": True,
     },
-    # ── 5. T1 Contour ───────────────────────────────────────────────
     {
         "name": "T1 Boundary",
         "file": "T1.shp",
@@ -90,7 +76,6 @@ OVERLAY_LAYERS = [
         },
         "tooltip": True,
     },
-    # ── T2 Contour ────────────────────────────
     {
         "name": "T2 Boundary",
         "file": "T2.shp",
@@ -103,7 +88,6 @@ OVERLAY_LAYERS = [
         "tooltip": True,
     },
 ]
-# ═══════════════════════════════════════════════════════════════════════════════
 
 
 def safe_range(s):
@@ -171,7 +155,6 @@ def load():
     points = gpd.read_file("points.shp")
     grid = gpd.read_file("ooipsectiongrid.shp")
 
-    # ── Load overlay layers from the registry ─────────
     overlay_jsons = {}
     for layer_def in OVERLAY_LAYERS:
         lname = layer_def["name"]
@@ -188,7 +171,6 @@ def load():
             st.warning(f"Could not load layer '{lname}': {e}")
             overlay_jsons[lname] = None
 
-    # ── Well attribute table (single-sheet xlsx) ──────
     wdf = pd.read_excel("wells.xlsx")
 
     for g in [lines, points, grid]:
@@ -208,13 +190,11 @@ def load():
         if c in wdf.columns:
             wdf[c] = pd.to_numeric(wdf[c], errors="coerce")
 
-    # ── OOIP comes from the grid shapefile attribute ──
     if "OOIP" in grid.columns:
         grid["SectionOOIP"] = pd.to_numeric(grid["OOIP"], errors="coerce").fillna(0)
     else:
         grid["SectionOOIP"] = 0.0
 
-    # ── assemble all well geometries (keep _source tag) ──
     pts_only = points[~points["UWI"].isin(lines["UWI"])][["UWI", "geometry"]].copy()
     pts_only["_source"] = "existing"
 
@@ -227,12 +207,10 @@ def load():
         geometry="geometry", crs=CRS_W,
     )
 
-    # ── separate lines vs points ──────────────────────
     line_mask = all_geom.geometry.geom_type.isin(["LineString", "MultiLineString"])
     legs = all_geom[line_mask].copy().reset_index(drop=True)
     pt_wells = all_geom[~line_mask].copy().reset_index(drop=True)
 
-    # ── group multilaterals by heel ───────────────────
     groups = _group_heels(legs)
 
     leg_to_gid = {}
@@ -253,7 +231,6 @@ def load():
 
     grp_len = legs.groupby("_gid")["_leg_length_m"].sum().rename("_total_length_m")
 
-    # ── group attribute table (from 00 UWI row) ──────
     grp_rows = []
     for gid, meta in group_meta.items():
         row = {"_gid": gid, "Well": meta["label"], "UWI": meta["uwi00"],
@@ -276,7 +253,6 @@ def load():
                 grp_attr[col] / grp_attr["Hz Length (m)"]
             ).replace([np.inf, -np.inf], np.nan)
 
-    # ── spatial overlay: legs × section grid ──────────
     legs_ov = legs[["_gid", "geometry"]].copy()
     sec_ov = grid[["Section", "geometry"]].copy()
 
@@ -298,7 +274,6 @@ def load():
         "_alloc_EUR": "SectionEUR",
     }, inplace=True)
 
-    # ── build section GeoDataFrame ────────────────────
     sec = grid.copy()
     sec = sec.merge(sec_alloc, on="Section", how="left")
 
@@ -317,7 +292,6 @@ def load():
         np.nan,
     )
 
-    # ── wells display GeoDataFrame ────────────────────
     legs_base = legs[["_gid", "_source", "geometry"]].copy()
 
     attr_cols = [c for c in grp_attr.columns
@@ -386,6 +360,46 @@ oil_price = sb.slider("Netback ($/bbl)", 0.0, 75.0, 35.0, 1.0)
 wf_uplift = sb.slider("Waterflood RF Uplift (% pts)", 0.0, 10.0, 5.9, 0.1,
                        help="Additive percentage-point increase in recovery factor")
 
+# ── Section List Input ────────────────────────────────
+sb.markdown("---")
+sb.subheader("📋 Section List Selection")
+sb.caption(
+    "Paste or type section names (one per line, or comma/space separated) "
+    "to highlight them in **blue** on the map."
+)
+section_list_raw = sb.text_area(
+    "Section list",
+    height=120,
+    placeholder="e.g.\n01-036-01W2\n02-036-01W2\n03-036-01W2",
+    key="section_list_input",
+)
+
+# Parse the input: split by newlines, commas, semicolons, or tabs
+import re
+if section_list_raw.strip():
+    parsed_sections = [
+        s.strip()
+        for s in re.split(r"[,;\t\n]+", section_list_raw)
+        if s.strip()
+    ]
+    # Match against available sections (case-insensitive comparison)
+    all_section_names = sec_gdf["Section"].unique()
+    selected_sections = set()
+    for ps in parsed_sections:
+        for asn in all_section_names:
+            if ps.lower() == asn.lower():
+                selected_sections.add(asn)
+                break
+    # Show match feedback
+    unmatched = [ps for ps in parsed_sections if not any(ps.lower() == asn.lower() for asn in all_section_names)]
+    if selected_sections:
+        sb.success(f"✅ {len(selected_sections)} section(s) matched")
+    if unmatched:
+        sb.warning(f"⚠️ {len(unmatched)} not found: {', '.join(unmatched[:10])}" +
+                   ("…" if len(unmatched) > 10 else ""))
+else:
+    selected_sections = set()
+
 sb.markdown("---")
 sb.subheader("🎨 Section Colouring")
 WF_COLS = ["WF Incremental Oil (bbl)", "Total RF w/ WF", "Total Recoverable (bbl)"]
@@ -448,6 +462,8 @@ sb.caption(
     f"Sections: **{sec_mask.sum()}** / {len(sec_gdf)}  •  "
     f"Wells: **{well_mask.sum()}** / {len(wells_gdf)}"
 )
+if selected_sections:
+    sb.caption(f"📋 Highlighted sections: **{len(selected_sections)}**")
 
 # ── Compute WF on filtered sections ──────────────────
 sec_wf = add_wf(sec_gdf[sec_mask], wf_uplift)
@@ -455,6 +471,10 @@ sec_wf["WF Incremental Netback ($)"] = (
     sec_wf.get("WF Incremental Oil (bbl)", 0) * oil_price
 )
 sec_disp = sec_wf.to_crs(CRS_M)
+
+# ── Tag selected sections for the map ─────────────────
+sec_disp["_selected"] = sec_disp["Section"].isin(selected_sections)
+
 wells_disp = wells_gdf[well_mask].to_crs(CRS_M)
 
 ALL_SEC = SEC_NUM + [
@@ -498,7 +518,6 @@ for layer_def in OVERLAY_LAYERS:
         style_function=lambda _, _s=style: _s,
     )
     if layer_def.get("tooltip"):
-        # Parse geojson to get field names for tooltip
         import json as _json
         _parsed = _json.loads(lj)
         _props = _parsed.get("features", [{}])[0].get("properties", {})
@@ -512,6 +531,16 @@ for layer_def in OVERLAY_LAYERS:
     folium.GeoJson(lj, **kwargs).add_to(m)
 
 # ── Section grid colouring ────────────────────────────
+# Build the set of selected section names for use in the style function
+_selected_set = selected_sections  # this is a Python set
+
+SELECTED_STY = {
+    "fillColor": "#4a90d9",
+    "fillOpacity": 0.45,
+    "color": "#1a5fa8",
+    "weight": 1.5,
+}
+
 gc = section_gradient
 if gc != "None" and gc in sec_disp.columns:
     vals = sec_disp[gc].dropna()
@@ -525,7 +554,11 @@ if gc != "None" and gc in sec_disp.columns:
         cmap.caption = gc
         m.add_child(cmap)
 
-        def _s(f, _c=gc, _m=cmap):
+        def _s(f, _c=gc, _m=cmap, _sel=_selected_set):
+            sec_name = f["properties"].get("Section", "")
+            # If this section is in the selected list, show blue
+            if _sel and sec_name in _sel:
+                return SELECTED_STY
             v = f["properties"].get(_c)
             if v is not None and not (isinstance(v, float) and np.isnan(v)):
                 return {
@@ -534,13 +567,24 @@ if gc != "None" and gc in sec_disp.columns:
                 }
             return NULL_STY
     else:
-        _s = lambda _: NULL_STY
+        def _s(f, _sel=_selected_set):
+            sec_name = f["properties"].get("Section", "")
+            if _sel and sec_name in _sel:
+                return SELECTED_STY
+            return NULL_STY
 else:
-    _s = lambda _: NULL_STY
+    def _s(f, _sel=_selected_set):
+        sec_name = f["properties"].get("Section", "")
+        if _sel and sec_name in _sel:
+            return SELECTED_STY
+        return NULL_STY
 
-stf = [c for c in sec_disp.columns if c not in ("geometry", "_source")]
+# Drop the helper column before rendering to avoid clutter in tooltip
+sec_disp_render = sec_disp.drop(columns=["_selected"], errors="ignore")
+
+stf = [c for c in sec_disp_render.columns if c not in ("geometry", "_source")]
 folium.GeoJson(
-    sec_disp.to_json(), name="Section Grid", style_function=_s,
+    sec_disp_render.to_json(), name="Section Grid", style_function=_s,
     highlight_function=lambda _: {
         "weight": 2, "color": "black", "fillOpacity": 0.55,
     },
@@ -650,6 +694,38 @@ map_data = st_folium(
     m, use_container_width=True, height=850,
     returned_objects=["all_drawings"],
 )
+
+# ── Selected Sections Analysis (from text input) ─────
+if selected_sections:
+    st.markdown("---")
+    st.header("📋 Selected Sections — Analysis")
+    st.caption(
+        f"Showing analysis for **{len(selected_sections)}** sections entered in the sidebar."
+    )
+
+    sel_sec_data = sec_wf[sec_wf["Section"].isin(selected_sections)].copy()
+
+    if sel_sec_data.empty:
+        st.info("None of the listed sections passed the current filters.")
+    else:
+        c1, c2, c3, c4 = st.columns(4)
+        so = sel_sec_data["SectionOOIP"].sum() if "SectionOOIP" in sel_sec_data.columns else 0
+        si = sel_sec_data["WF Incremental Oil (bbl)"].sum() if "WF Incremental Oil (bbl)" in sel_sec_data.columns else 0
+        sr = si * oil_price
+        st_ = sel_sec_data["Total Recoverable (bbl)"].sum() if "Total Recoverable (bbl)" in sel_sec_data.columns else 0
+        c1.metric("OOIP", f"{so:,.0f} bbl")
+        c2.metric("WF Incremental Oil", f"{si:,.0f} bbl")
+        c3.metric("Total Recoverable w/ WF", f"{st_:,.0f} bbl")
+        c4.metric("Incremental Netback", f"${sr:,.0f}")
+
+        scols = ["Section"] + [c for c in ALL_SEC if c in sel_sec_data.columns]
+        sdet = sel_sec_data[scols].reset_index(drop=True)
+        with st.expander("Section Detail", expanded=True):
+            st.dataframe(sdet, use_container_width=True)
+        st.download_button(
+            "📥 Selected Sections CSV", sdet.to_csv(index=False),
+            "selected_sections.csv", "text/csv",
+        )
 
 # ── Polygon selection ─────────────────────────────────
 st.markdown("---")
