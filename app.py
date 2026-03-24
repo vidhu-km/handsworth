@@ -46,7 +46,6 @@ OVERLAY_LAYERS = [
             "weight": 0.5,
             "fillOpacity": 0.15,
         },
-        "simplify": 50,
     },
     # ── 2. Bakken Units ──────────────────────────────────────────────────────
     {
@@ -73,36 +72,36 @@ OVERLAY_LAYERS = [
         "name": "Bakken Sw Line",
         "file": "Bakken Sw Line_plyln.shp",
         "style": {
-            "color": "#0000ff",
+            "color": "#blue",
             "weight": 2,
             "fillOpacity": 0,
         },
         "tooltip": True,
     },
-    # ── 5. T1 and T2 Contours ───────────────────────────────────────────────
+    # ── 5. T1 Contour ───────────────────────────────────────────────
     {
-        "name": "T1 and T2 Contours",
-        "file": "T1 and T2 Contours_expanded_plyln.shp",
+        "name": "T1 Boundary",
+        "file": "T1.shp",
         "style": {
-            "color": "#ff0000",
+            "color": "#green",
             "weight": 1.5,
             "fillOpacity": 0,
             "dashArray": "6 4",
         },
         "tooltip": True,
     },
-    # ── COPY-PASTE TEMPLATE (uncomment & fill in) ────────────────────────────
-    # {
-    #     "name": "My New Layer",
-    #     "file": "my_layer.shp",
-    #     "style": {
-    #         "color": "purple",
-    #         "weight": 2,
-    #         "fillOpacity": 0,
-    #     },
-    #     "simplify": None,
-    #     "tooltip": True,
-    # },
+    # ── T2 Contour ────────────────────────────
+    {
+        "name": "T2 Boundary",
+        "file": "T2.shp",
+        "style": {
+            "color": "red",
+            "weight": 1.5,
+            "fillOpacity": 0,
+            "dashArray": "6 4",
+        },
+        "tooltip": True,
+    },
 ]
 # ═══════════════════════════════════════════════════════════════════════════════
 
