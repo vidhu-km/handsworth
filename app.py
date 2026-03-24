@@ -95,7 +95,7 @@ OVERLAY_LAYERS = [
         "name": "T2 Boundary",
         "file": "T2.shp",
         "style": {
-            "color": "ff0000",
+            "color": "#ff0000",
             "weight": 1.5,
             "fillOpacity": 0,
             "dashArray": "6 4",
