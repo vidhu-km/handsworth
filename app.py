@@ -57,7 +57,7 @@ OVERLAY_LAYERS = [
     },
     {
         "name": "Bakken Sw Line",
-        "file": "Bakken Sw Line_plyln.shp",
+        "file": "sw.shp",
         "style": {
             "color": "#0000ff",
             "weight": 2,
