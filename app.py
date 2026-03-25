@@ -373,6 +373,7 @@ sb.markdown(
     """,
     unsafe_allow_html=True
 )
+
 sb.caption(
     "Paste or type section names (one per line, or comma/space separated) "
     "to highlight them in **blue** on the map."
