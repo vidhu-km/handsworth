@@ -391,11 +391,6 @@ section_list_raw = sb.text_area(
     key="section_list_input",
 )
 
-sb.subheader("💧 Waterflood Scenario")
-oil_price = sb.slider("Netback ($/bbl)", 0.0, 75.0, 35.0, 1.0)
-wf_uplift = sb.slider("Waterflood RF Uplift (% pts)", 0.0, 10.0, 5.9, 0.1,
-                       help="Additive percentage-point increase in recovery factor")
-
 # Parse the input: split by newlines, commas, semicolons, or tabs
 import re
 if section_list_raw.strip():
@@ -421,6 +416,11 @@ if section_list_raw.strip():
                    ("…" if len(unmatched) > 10 else ""))
 else:
     selected_sections = set()
+
+sb.subheader("💧 Waterflood Scenario")
+oil_price = sb.slider("Netback ($/bbl)", 0.0, 75.0, 35.0, 1.0)
+wf_uplift = sb.slider("Waterflood RF Uplift (% pts)", 0.0, 10.0, 5.9, 0.1,
+                       help="Additive percentage-point increase in recovery factor")
 
 sb.markdown("---")
 sb.subheader("🎨 Section Colouring")
