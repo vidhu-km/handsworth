@@ -374,10 +374,6 @@ sb.markdown(
     unsafe_allow_html=True
 )
 
-
-
-# ── Section List Input ────────────────────────────────
-sb.markdown("---")
 sb.subheader("📋 Section List Selection")
 sb.caption(
     "Paste or type section names (one per line, or comma/space separated) "
