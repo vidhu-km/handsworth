@@ -383,6 +383,56 @@ sb.caption(
     "Paste or type section names (one per line, or comma/space separated) "
     "to highlight them in **blue** on the map."
 )
+
+with sb.form("section_form"):
+    section_list_raw = st.text_area(
+        "Section list",
+        height=120,
+        placeholder="e.g.\n01-036-01W2\n02-036-01W2",
+    )
+
+    submit_sections = st.form_submit_button("Apply (Ctrl+Enter)")
+
+# Only update when user submits
+if submit_sections and section_list_raw.strip():
+    import re
+    parsed_sections = [
+        s.strip()
+        for s in re.split(r"[,;\t\n]+", section_list_raw)
+        if s.strip()
+    ]
+
+    all_section_names = sec_gdf["Section"].unique()
+    selected_sections = set()
+
+    for ps in parsed_sections:
+        for asn in all_section_names:
+            if ps.lower() == asn.lower():
+                selected_sections.add(asn)
+                break
+
+    unmatched = [
+        ps for ps in parsed_sections
+        if not any(ps.lower() == asn.lower() for asn in all_section_names)
+    ]
+
+    if selected_sections:
+        sb.success(f"✅ {len(selected_sections)} section(s) matched")
+    if unmatched:
+        sb.warning(
+            f"⚠️ {len(unmatched)} not found: {', '.join(unmatched[:10])}" +
+            ("…" if len(unmatched) > 10 else "")
+        )
+
+elif "selected_sections" not in st.session_state:
+    selected_sections = set()
+else:
+    selected_sections = st.session_state.get("selected_sections", set())
+
+# Persist selections
+if submit_sections:
+    st.session_state["selected_sections"] = selected_sections
+
 section_list_raw = sb.text_area(
     "Section list",
     height=120,
