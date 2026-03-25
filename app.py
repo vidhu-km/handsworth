@@ -253,44 +253,58 @@ def load():
                 grp_attr[col] / grp_attr["Hz Length (m)"]
             ).replace([np.inf, -np.inf], np.nan)
 
-    legs_ov = legs[["_gid", "geometry"]].copy()
+    legs_ov = legs[["_gid", "_source", "geometry"]].copy()
     sec_ov = grid[["Section", "geometry"]].copy()
 
     overlay = gpd.overlay(legs_ov, sec_ov, how="intersection")
     overlay["_int_length_m"] = overlay.geometry.length
 
     rate_cols = [c for c in grp_attr.columns if c.endswith("_per_m")]
-    overlay = overlay.merge(grp_attr[["_gid"] + rate_cols], on="_gid", how="left")
+    overlay = overlay.merge(grp_attr[["_gid", "_source"] + rate_cols], on=["_gid", "_source"], how="left")
 
     for col in ["Cuml", "EUR"]:
         pm = f"_{col}_per_m"
         if pm in overlay.columns:
             overlay[f"_alloc_{col}"] = overlay[pm] * overlay["_int_length_m"]
 
+    # --- Build section allocations for BOTH scenarios (all wells / existing only) ---
     alloc_cols = [c for c in overlay.columns if c.startswith("_alloc_")]
-    sec_alloc = overlay.groupby("Section")[alloc_cols].sum().reset_index()
-    sec_alloc.rename(columns={
+
+    # All wells (existing + inventory)
+    sec_alloc_all = overlay.groupby("Section")[alloc_cols].sum().reset_index()
+    sec_alloc_all.rename(columns={
         "_alloc_Cuml": "SectionCuml",
         "_alloc_EUR": "SectionEUR",
     }, inplace=True)
 
-    sec = grid.copy()
-    sec = sec.merge(sec_alloc, on="Section", how="left")
+    # Existing only (no inventory)
+    overlay_existing = overlay[overlay["_source"] != "inventory"]
+    sec_alloc_existing = overlay_existing.groupby("Section")[alloc_cols].sum().reset_index()
+    sec_alloc_existing.rename(columns={
+        "_alloc_Cuml": "SectionCuml",
+        "_alloc_EUR": "SectionEUR",
+    }, inplace=True)
 
-    for c in ["SectionCuml", "SectionEUR"]:
-        if c in sec.columns:
-            sec[c] = sec[c].fillna(0)
+    def _build_sec(grid_base, sec_alloc):
+        sec = grid_base.copy()
+        sec = sec.merge(sec_alloc, on="Section", how="left")
+        for c in ["SectionCuml", "SectionEUR"]:
+            if c in sec.columns:
+                sec[c] = sec[c].fillna(0)
+        sec["SectionRF"] = np.where(
+            sec["SectionOOIP"] > 0,
+            sec["SectionCuml"] / sec["SectionOOIP"],
+            np.nan,
+        )
+        sec["SectionURF"] = np.where(
+            sec["SectionOOIP"] > 0,
+            sec["SectionEUR"] / sec["SectionOOIP"],
+            np.nan,
+        )
+        return sec
 
-    sec["SectionRF"] = np.where(
-        sec["SectionOOIP"] > 0,
-        sec["SectionCuml"] / sec["SectionOOIP"],
-        np.nan,
-    )
-    sec["SectionURF"] = np.where(
-        sec["SectionOOIP"] > 0,
-        sec["SectionEUR"] / sec["SectionOOIP"],
-        np.nan,
-    )
+    sec_all = _build_sec(grid, sec_alloc_all)
+    sec_existing = _build_sec(grid, sec_alloc_existing)
 
     legs_base = legs[["_gid", "_source", "geometry"]].copy()
 
@@ -333,12 +347,12 @@ def load():
     )
     wells_final["_rep"] = wells_final.geometry.apply(toe_point)
 
-    return wells_final, sec, overlay_jsons
+    return wells_final, sec_all, sec_existing, overlay_jsons
 
-wells_gdf, sec_gdf, overlay_jsons = load()
+wells_gdf, sec_gdf_all, sec_gdf_existing, overlay_jsons = load()
 
 SEC_NUM = [c for c in ["SectionOOIP", "SectionCuml", "SectionRF",
-                        "SectionEUR", "SectionURF"] if c in sec_gdf.columns]
+                        "SectionEUR", "SectionURF"] if c in sec_gdf_all.columns]
 
 def add_wf(df, uplift):
     d = df.copy()
@@ -351,6 +365,17 @@ def add_wf(df, uplift):
 # ── Sidebar ───────────────────────────────────────────
 sb = st.sidebar
 sb.title("🛢️ Bakken Unit Screener")
+
+# ── Include Inventory Checkbox ────────────────────────
+sb.markdown("---")
+include_inventory = sb.checkbox("Include Inventory", value=True,
+                                help="Include inventory wells (red) in map and analysis")
+
+# ── Pick the right section dataset based on checkbox ──
+if include_inventory:
+    sec_gdf = sec_gdf_all
+else:
+    sec_gdf = sec_gdf_existing
 
 # ── Section List Input ────────────────────────────────
 sb.markdown("---")
@@ -445,11 +470,18 @@ def mask_num(df, rngs):
 
 
 sec_mask = mask_num(sec_gdf, sec_ranges)
-well_mask = pd.Series(True, index=wells_gdf.index)
+
+# ── Filter wells based on inventory checkbox ──────────
+if include_inventory:
+    wells_filtered = wells_gdf
+else:
+    wells_filtered = wells_gdf[wells_gdf["_source"] != "inventory"]
+
+well_mask = pd.Series(True, index=wells_filtered.index)
 
 sb.caption(
     f"Sections: **{sec_mask.sum()}** / {len(sec_gdf)}  •  "
-    f"Wells: **{len(wells_gdf)}** / {len(wells_gdf)}"
+    f"Wells: **{well_mask.sum()}** / {len(wells_filtered)}"
 )
 if selected_sections:
     sb.caption(f"📋 Highlighted sections: **{len(selected_sections)}**")
@@ -464,7 +496,7 @@ sec_disp = sec_wf.to_crs(CRS_M)
 # ── Tag selected sections for the map ─────────────────
 sec_disp["_selected"] = sec_disp["Section"].isin(selected_sections)
 
-wells_disp = wells_gdf[well_mask].to_crs(CRS_M)
+wells_disp = wells_filtered[well_mask].to_crs(CRS_M)
 
 ALL_SEC = SEC_NUM + [
     c for c in WF_COLS + ["WF Incremental Netback ($)"] if c in sec_wf.columns
@@ -578,10 +610,14 @@ is_inv = wells_disp["_source"] == "inventory"
 wells_existing = wells_disp[~is_inv]
 wells_inventory = wells_disp[is_inv]
 
-for subset, color, layer_suffix in [
+# Build the list of well subsets to render
+well_render_list = [
     (wells_existing, "black", "Existing"),
-    (wells_inventory, "red", "Inventory"),
-]:
+]
+if include_inventory:
+    well_render_list.append((wells_inventory, "red", "Inventory"))
+
+for subset, color, layer_suffix in well_render_list:
     if subset.empty:
         continue
 
