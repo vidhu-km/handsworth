@@ -335,12 +335,10 @@ def load():
 
     return wells_final, sec, overlay_jsons
 
-
 wells_gdf, sec_gdf, overlay_jsons = load()
 
 SEC_NUM = [c for c in ["SectionOOIP", "SectionCuml", "SectionRF",
                         "SectionEUR", "SectionURF"] if c in sec_gdf.columns]
-
 
 def add_wf(df, uplift):
     d = df.copy()
@@ -350,11 +348,13 @@ def add_wf(df, uplift):
         d["Total Recoverable (bbl)"] = d["SectionOOIP"] * d["Total URF w/ WF"]
     return d
 
-
 # ── Sidebar ───────────────────────────────────────────
 sb = st.sidebar
 sb.title("🛢️ Bakken Unit Screener")
 
+# ── Section List Input ────────────────────────────────
+sb.markdown("---")
+sb.subheader("📋 Section List Selection")
 sb.markdown(
     """
     <a href="https://vidhu-km.github.io/sectionselector/" target="_blank">
@@ -373,8 +373,6 @@ sb.markdown(
     """,
     unsafe_allow_html=True
 )
-
-sb.subheader("📋 Section List Selection")
 sb.caption(
     "Paste or type section names (one per line, or comma/space separated) "
     "to highlight them in **blue** on the map."
