@@ -10,7 +10,7 @@ from shapely.geometry import shape, Point
 from shapely.ops import transform as shapely_transform
 from pyproj import Transformer
 
-st.set_page_config(layout="wide", page_title="Bakken WF Section Screener", page_icon="🛢️")
+st.set_page_config(layout="wide", page_title="Bakken Section Screener", page_icon="🛢️")
 
 TIP = "font-size:11px;padding:3px 6px;background:rgba(255,255,255,.92);border:1px solid #333;border-radius:3px;"
 NULL_STY = {"fillColor": "#fff", "fillOpacity": 0, "color": "#888", "weight": 0.25}
