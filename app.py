@@ -502,7 +502,7 @@ ALL_SEC = SEC_NUM + [
     c for c in WF_COLS + ["WF Incremental Netback ($)"] if c in sec_wf.columns
 ]
 
-st.title("🛢️ Bakken WF Section Screening Tool")
+st.title("🛢️ Bakken Section Screening Tool")
 
 # ── Map ───────────────────────────────────────────────
 bnds = sec_gdf.total_bounds
