@@ -355,6 +355,25 @@ def add_wf(df, uplift):
 sb = st.sidebar
 sb.title("🛢️ WF Unit Screener")
 
+sb.markdown(
+    """
+    <a href="https://vidhu-km.github.io/sectionselector/" target="_blank">
+        <button style="
+            width:100%;
+            padding:8px;
+            background-color:#4a90d9;
+            color:white;
+            border:none;
+            border-radius:5px;
+            font-size:14px;
+            cursor:pointer;">
+            🔗 Select Sections Here
+        </button>
+    </a>
+    """,
+    unsafe_allow_html=True
+)
+
 sb.subheader("💧 Waterflood Scenario")
 oil_price = sb.slider("Netback ($/bbl)", 0.0, 75.0, 35.0, 1.0)
 wf_uplift = sb.slider("Waterflood RF Uplift (% pts)", 0.0, 10.0, 5.9, 0.1,
