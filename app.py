@@ -671,6 +671,7 @@ for subset, color, layer_suffix in [
         ).add_to(m)
 
 folium.LayerControl(collapsed=True).add_to(m)
+st.session_state["map"] = m
 map_data = st_folium(
     m, use_container_width=True, height=850,
 )
