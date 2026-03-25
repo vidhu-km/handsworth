@@ -3,7 +3,7 @@ import geopandas as gpd
 import pandas as pd
 import numpy as np
 import folium
-from folium.plugins import MiniMap
+from folium.plugins import MiniMap, Draw
 from streamlit_folium import st_folium
 import branca.colormap as cm
 from shapely.geometry import shape, Point
@@ -259,7 +259,7 @@ def load():
     overlay = gpd.overlay(legs_ov, sec_ov, how="intersection")
     overlay["_int_length_m"] = overlay.geometry.length
 
-    rate_cols = [c for c ingrp_attr.columns if c.endswith("_per_m")]
+    rate_cols = [c for c in grp_attr.columns if c.endswith("_per_m")]
     overlay = overlay.merge(grp_attr[["_gid"] + rate_cols], on="_gid", how="left")
 
     for col in ["Cuml", "EUR"]:
@@ -355,13 +355,12 @@ def add_wf(df, uplift):
 sb = st.sidebar
 sb.title("🛢️ WF Unit Screener")
 
-# Keep only the paste box as the primary input
-# Other inputs were removed per request
+sb.subheader("💧 Waterflood Scenario")
+oil_price = sb.slider("Netback ($/bbl)", 0.0, 75.0, 35.0, 1.0)
+wf_uplift = sb.slider("Waterflood RF Uplift (% pts)", 0.0, 10.0, 5.9, 0.1,
+                       help="Additive percentage-point increase in recovery factor")
 
-# Define a fixed oil price (since we are removing user inputs)
-oil_price = 60.0
-
-# ── Section List Input (paste box) ─────────────────
+# ── Section List Input ────────────────────────────────
 sb.markdown("---")
 sb.subheader("📋 Section List Selection")
 sb.caption(
@@ -402,17 +401,72 @@ else:
     selected_sections = set()
 
 sb.markdown("---")
+sb.subheader("🎨 Section Colouring")
+WF_COLS = ["WF Incremental Oil (bbl)", "Total RF w/ WF", "Total Recoverable (bbl)"]
+grad_opts = ["None"] + WF_COLS + SEC_NUM
+section_gradient = sb.selectbox("Colour sections by", grad_opts, index=1)
 
-# Remove Section Colouring input (no extra inputs allowed)
-gc = "None"  # fixed, no user input for coloring
+sb.markdown("---")
+sb.subheader("🔍 Section Filters")
+sec_ranges = {}
+for c in SEC_NUM:
+    if c not in sec_gdf.columns:
+        continue
+    lo, hi = safe_range(sec_gdf[c])
+    if lo == hi:
+        continue
+    r = sb.slider(c, lo, hi, (lo, hi), key=f"sf_{c}")
+    if r != (lo, hi):
+        sec_ranges[c] = r
 
-# Remove Section Filters and Well Filters inputs
-# We'll use all sections and all wells by default (no filtering)
-sec_mask = pd.Series(True, index=sec_gdf.index)
-well_mask = pd.Series(True, index=wells_gdf.index) if 'wells_gdf' in locals() else pd.Series([], dtype=bool)
+sb.markdown("---")
+sb.subheader("🔍 Well Filters")
+well_num_ranges = {}
+for c in WELL_NUM:
+    if c not in wells_gdf.columns:
+        continue
+    lo, hi = safe_range(wells_gdf[c])
+    if lo == hi:
+        continue
+    r = sb.slider(c, lo, hi, (lo, hi), key=f"wf_{c}")
+    if r != (lo, hi):
+        well_num_ranges[c] = r
 
-# ── Compute WF on filtered sections (no user uplift, use 0) ─────────────────
-sec_wf = add_wf(sec_gdf[sec_mask], 0)
+well_cat_filters = {}
+for c in WELL_CAT:
+    if c not in wells_gdf.columns:
+        continue
+    opts = sorted(wells_gdf[c].dropna().unique().astype(str))
+    if not opts:
+        continue
+    sel = sb.multiselect(c, opts, default=opts, key=f"wc_{c}")
+    if len(sel) < len(opts):
+        well_cat_filters[c] = sel
+
+
+def mask_num(df, rngs):
+    m = pd.Series(True, index=df.index)
+    for c, (lo, hi) in rngs.items():
+        if c in df.columns:
+            m &= ((df[c] >= lo) & (df[c] <= hi)) | df[c].isna()
+    return m
+
+
+sec_mask = mask_num(sec_gdf, sec_ranges)
+well_mask = mask_num(wells_gdf, well_num_ranges)
+for c, vals in well_cat_filters.items():
+    if c in wells_gdf.columns:
+        well_mask &= wells_gdf[c].astype(str).isin(vals) | wells_gdf[c].isna()
+
+sb.caption(
+    f"Sections: **{sec_mask.sum()}** / {len(sec_gdf)}  •  "
+    f"Wells: **{well_mask.sum()}** / {len(wells_gdf)}"
+)
+if selected_sections:
+    sb.caption(f"📋 Highlighted sections: **{len(selected_sections)}**")
+
+# ── Compute WF on filtered sections ──────────────────
+sec_wf = add_wf(sec_gdf[sec_mask], wf_uplift)
 sec_wf["WF Incremental Netback ($)"] = (
     sec_wf.get("WF Incremental Oil (bbl)", 0) * oil_price
 )
@@ -421,7 +475,6 @@ sec_disp = sec_wf.to_crs(CRS_M)
 # ── Tag selected sections for the map ─────────────────
 sec_disp["_selected"] = sec_disp["Section"].isin(selected_sections)
 
-# Use all wells (no filtering)
 wells_disp = wells_gdf[well_mask].to_crs(CRS_M)
 
 ALL_SEC = SEC_NUM + [
@@ -440,7 +493,18 @@ m = folium.Map(
     tiles="CartoDB positron", prefer_canvas=True,
 )
 MiniMap(toggle_display=True, position="bottomleft").add_to(m)
-# Removed polygon drawing tool; no Draw plugin
+Draw(
+    export=False, position="topleft",
+    draw_options=dict(
+        polyline=False, circle=False, circlemarker=False, marker=False,
+        rectangle=True,
+        polygon=dict(
+            allowIntersection=False,
+            shapeOptions=dict(color="#ff7800", weight=2, fillOpacity=0.1),
+        ),
+    ),
+    edit_options=dict(edit=False),
+).add_to(m)
 
 # ── Overlay layers (rendered in registry order) ──────
 for layer_def in OVERLAY_LAYERS:
@@ -466,7 +530,7 @@ for layer_def in OVERLAY_LAYERS:
             )
     folium.GeoJson(lj, **kwargs).add_to(m)
 
-# ── Section grid colouring (no dynamic input) ─────────────────
+# ── Section grid colouring ────────────────────────────
 # Build the set of selected section names for use in the style function
 _selected_set = selected_sections  # this is a Python set
 
@@ -477,8 +541,7 @@ SELECTED_STY = {
     "weight": 1.5,
 }
 
-gc = gc  # "None" path (no color-by gradient)
-
+gc = section_gradient
 if gc != "None" and gc in sec_disp.columns:
     vals = sec_disp[gc].dropna()
     if not vals.empty:
@@ -539,7 +602,6 @@ is_inv = wells_disp["_source"] == "inventory"
 wells_existing = wells_disp[~is_inv]
 wells_inventory = wells_disp[is_inv]
 
-# Render wells (no filters)
 for subset, color, layer_suffix in [
     (wells_existing, "black", "Existing"),
     (wells_inventory, "red", "Inventory"),
@@ -664,3 +726,83 @@ if selected_sections:
             "📥 Selected Sections CSV", sdet.to_csv(index=False),
             "selected_sections.csv", "text/csv",
         )
+
+# ── Polygon selection ─────────────────────────────────
+st.markdown("---")
+st.header("📐 Polygon Selection — Section Analysis")
+st.caption(
+    "Draw a polygon/rectangle to evaluate potential waterflood uplift."
+)
+
+drawings = map_data.get("all_drawings") if map_data else None
+
+if drawings and len(drawings) > 0:
+    polys = [shape(d["geometry"]) for d in drawings if d["geometry"]["type"] == "Polygon"]
+
+    if len(polys) > 0:
+        from shapely.ops import unary_union
+
+        combined = unary_union(polys)
+
+        d26 = shapely_transform(
+            lambda x, y, z=None: TO26.transform(x, y),
+            combined
+        )
+
+        dgdf = gpd.GeoDataFrame([{"geometry": d26}], crs=CRS_W)
+
+    # Sections — intersects
+    sec_hits = gpd.sjoin(sec_wf, dgdf, how="inner", predicate="intersects")
+    sec_hits = sec_hits.drop(columns=["index_right"], errors="ignore")
+
+    # Wells — intersects
+    well_hits = gpd.sjoin(
+        wells_gdf[well_mask], dgdf, how="inner", predicate="intersects",
+    )
+    well_hits = well_hits.drop(columns=["index_right"], errors="ignore")
+
+    well_unique = (
+        well_hits.drop_duplicates(subset="Well")
+        if "Well" in well_hits.columns
+        else well_hits
+    )
+
+    if sec_hits.empty and well_hits.empty:
+        st.info("No data in polygon.")
+    else:
+        if not sec_hits.empty:
+            st.subheader(f"📊 {len(sec_hits)} Sections Selected")
+            c1, c2, c3, c4 = st.columns(4)
+            so = (
+                sec_hits["SectionOOIP"].sum()
+                if "SectionOOIP" in sec_hits.columns else 0
+            )
+            si = (
+                sec_hits["WF Incremental Oil (bbl)"].sum()
+                if "WF Incremental Oil (bbl)" in sec_hits.columns else 0
+            )
+            sr = si * oil_price
+            st_ = (
+                sec_hits["Total Recoverable (bbl)"].sum()
+                if "Total Recoverable (bbl)" in sec_hits.columns else 0
+            )
+            c1.metric("OOIP", f"{so:,.0f} bbl")
+            c2.metric("WF Incremental Oil", f"{si:,.0f} bbl")
+            c3.metric("Total Recoverable w/ WF", f"{st_:,.0f} bbl")
+            c4.metric("Incremental Netback", f"${sr:,.0f}")
+
+            scols = ["Section"] + [
+                c for c in ALL_SEC if c in sec_hits.columns
+            ]
+            sdet = sec_hits[scols].reset_index(drop=True)
+            with st.expander("Section Detail", expanded=False):
+                st.dataframe(sdet, use_container_width=True)
+            st.download_button(
+                "📥 Sections CSV", sdet.to_csv(index=False),
+                "polygon_sections.csv", "text/csv",
+            )
+else:
+    st.info(
+        "Draw a polygon or rectangle on the map to evaluate "
+        "waterflood unitization potential."
+    )
