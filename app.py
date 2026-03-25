@@ -3,7 +3,7 @@ import geopandas as gpd
 import pandas as pd
 import numpy as np
 import folium
-from folium.plugins import MiniMap, Draw
+from folium.plugins import MiniMap
 from streamlit_folium import st_folium
 import branca.colormap as cm
 from shapely.geometry import shape, Point
@@ -419,31 +419,6 @@ for c in SEC_NUM:
     if r != (lo, hi):
         sec_ranges[c] = r
 
-sb.markdown("---")
-sb.subheader("🔍 Well Filters")
-well_num_ranges = {}
-for c in WELL_NUM:
-    if c not in wells_gdf.columns:
-        continue
-    lo, hi = safe_range(wells_gdf[c])
-    if lo == hi:
-        continue
-    r = sb.slider(c, lo, hi, (lo, hi), key=f"wf_{c}")
-    if r != (lo, hi):
-        well_num_ranges[c] = r
-
-well_cat_filters = {}
-for c in WELL_CAT:
-    if c not in wells_gdf.columns:
-        continue
-    opts = sorted(wells_gdf[c].dropna().unique().astype(str))
-    if not opts:
-        continue
-    sel = sb.multiselect(c, opts, default=opts, key=f"wc_{c}")
-    if len(sel) < len(opts):
-        well_cat_filters[c] = sel
-
-
 def mask_num(df, rngs):
     m = pd.Series(True, index=df.index)
     for c, (lo, hi) in rngs.items():
@@ -453,14 +428,11 @@ def mask_num(df, rngs):
 
 
 sec_mask = mask_num(sec_gdf, sec_ranges)
-well_mask = mask_num(wells_gdf, well_num_ranges)
-for c, vals in well_cat_filters.items():
-    if c in wells_gdf.columns:
-        well_mask &= wells_gdf[c].astype(str).isin(vals) | wells_gdf[c].isna()
+well_mask = pd.Series(True, index=wells_gdf.index)
 
 sb.caption(
     f"Sections: **{sec_mask.sum()}** / {len(sec_gdf)}  •  "
-    f"Wells: **{well_mask.sum()}** / {len(wells_gdf)}"
+    f"Wells: **{len(wells_gdf)}** / {len(wells_gdf)}"
 )
 if selected_sections:
     sb.caption(f"📋 Highlighted sections: **{len(selected_sections)}**")
@@ -493,19 +465,6 @@ m = folium.Map(
     tiles="CartoDB positron", prefer_canvas=True,
 )
 MiniMap(toggle_display=True, position="bottomleft").add_to(m)
-Draw(
-    export=False, position="topleft",
-    draw_options=dict(
-        polyline=False, circle=False, circlemarker=False, marker=False,
-        rectangle=True,
-        polygon=dict(
-            allowIntersection=False,
-            shapeOptions=dict(color="#ff7800", weight=2, fillOpacity=0.1),
-        ),
-    ),
-    edit_options=dict(edit=False),
-).add_to(m)
-
 # ── Overlay layers (rendered in registry order) ──────
 for layer_def in OVERLAY_LAYERS:
     lname = layer_def["name"]
@@ -692,7 +651,6 @@ for subset, color, layer_suffix in [
 folium.LayerControl(collapsed=True).add_to(m)
 map_data = st_folium(
     m, use_container_width=True, height=850,
-    returned_objects=["all_drawings"],
 )
 
 # ── Selected Sections Analysis (from text input) ─────
@@ -726,83 +684,3 @@ if selected_sections:
             "📥 Selected Sections CSV", sdet.to_csv(index=False),
             "selected_sections.csv", "text/csv",
         )
-
-# ── Polygon selection ─────────────────────────────────
-st.markdown("---")
-st.header("📐 Polygon Selection — Section Analysis")
-st.caption(
-    "Draw a polygon/rectangle to evaluate potential waterflood uplift."
-)
-
-drawings = map_data.get("all_drawings") if map_data else None
-
-if drawings and len(drawings) > 0:
-    polys = [shape(d["geometry"]) for d in drawings if d["geometry"]["type"] == "Polygon"]
-
-    if len(polys) > 0:
-        from shapely.ops import unary_union
-
-        combined = unary_union(polys)
-
-        d26 = shapely_transform(
-            lambda x, y, z=None: TO26.transform(x, y),
-            combined
-        )
-
-        dgdf = gpd.GeoDataFrame([{"geometry": d26}], crs=CRS_W)
-
-    # Sections — intersects
-    sec_hits = gpd.sjoin(sec_wf, dgdf, how="inner", predicate="intersects")
-    sec_hits = sec_hits.drop(columns=["index_right"], errors="ignore")
-
-    # Wells — intersects
-    well_hits = gpd.sjoin(
-        wells_gdf[well_mask], dgdf, how="inner", predicate="intersects",
-    )
-    well_hits = well_hits.drop(columns=["index_right"], errors="ignore")
-
-    well_unique = (
-        well_hits.drop_duplicates(subset="Well")
-        if "Well" in well_hits.columns
-        else well_hits
-    )
-
-    if sec_hits.empty and well_hits.empty:
-        st.info("No data in polygon.")
-    else:
-        if not sec_hits.empty:
-            st.subheader(f"📊 {len(sec_hits)} Sections Selected")
-            c1, c2, c3, c4 = st.columns(4)
-            so = (
-                sec_hits["SectionOOIP"].sum()
-                if "SectionOOIP" in sec_hits.columns else 0
-            )
-            si = (
-                sec_hits["WF Incremental Oil (bbl)"].sum()
-                if "WF Incremental Oil (bbl)" in sec_hits.columns else 0
-            )
-            sr = si * oil_price
-            st_ = (
-                sec_hits["Total Recoverable (bbl)"].sum()
-                if "Total Recoverable (bbl)" in sec_hits.columns else 0
-            )
-            c1.metric("OOIP", f"{so:,.0f} bbl")
-            c2.metric("WF Incremental Oil", f"{si:,.0f} bbl")
-            c3.metric("Total Recoverable w/ WF", f"{st_:,.0f} bbl")
-            c4.metric("Incremental Netback", f"${sr:,.0f}")
-
-            scols = ["Section"] + [
-                c for c in ALL_SEC if c in sec_hits.columns
-            ]
-            sdet = sec_hits[scols].reset_index(drop=True)
-            with st.expander("Section Detail", expanded=False):
-                st.dataframe(sdet, use_container_width=True)
-            st.download_button(
-                "📥 Sections CSV", sdet.to_csv(index=False),
-                "polygon_sections.csv", "text/csv",
-            )
-else:
-    st.info(
-        "Draw a polygon or rectangle on the map to evaluate "
-        "waterflood unitization potential."
-    )
