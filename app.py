@@ -566,9 +566,8 @@ if selected_sections:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# COMPUTE WF ON FILTERED SECTIONS (cached)
+# COMPUTE WF ON FILTERED SECTIONS
 # ═══════════════════════════════════════════════════════════════════════════════
-@st.cache_data(show_spinner=False)
 def compute_section_display(
     _sec_4326,          # underscore prefix = unhashable, skip hashing
     mask_indices,       # hashable tuple of indices
@@ -618,7 +617,6 @@ ALL_SEC = SEC_NUM + [
 # ═══════════════════════════════════════════════════════════════════════════════
 # BUILD MAP (cached based on all map-affecting parameters)
 # ═══════════════════════════════════════════════════════════════════════════════
-@st.cache_data(show_spinner="Building map…")
 def build_map(
     _sec_geojson,
     _sec_tooltip_fields,
@@ -629,8 +627,6 @@ def build_map(
     _overlay_tooltip_fields,
     _well_data,
     _map_center,
-    # These affect the gradient range:
-    _gradient_hash,
 ):
     """Build the folium map object. Cached so it doesn't rebuild on unrelated changes."""
     m = folium.Map(
