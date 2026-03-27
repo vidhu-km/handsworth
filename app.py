@@ -798,11 +798,6 @@ def build_map(
     folium.LayerControl(collapsed=True).add_to(m)
     return m
 
-
-# Create a hash of the gradient values to avoid unnecessary rebuilds
-# when only non-map parameters change
-gradient_hash = hashlib.md5(sec_geojson.encode()).hexdigest()[:12] if sec_geojson else ""
-
 m = build_map(
     sec_geojson,
     sec_tooltip_fields,
@@ -813,7 +808,6 @@ m = build_map(
     overlay_tooltip_fields,
     well_data,
     map_center,
-    gradient_hash,
 )
 
 
